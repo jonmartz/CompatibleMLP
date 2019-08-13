@@ -1,32 +1,28 @@
-# A simple Tensorflow 2 layer dense network example
+import csv
 import tensorflow as tf
 import numpy as np
 import pandas as pd
-from collections import defaultdict
-from sklearn import datasets
-from sklearn.preprocessing import MinMaxScaler, LabelEncoder
-from sklearn.decomposition import PCA
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import LabelBinarizer
-# import matplotlib.pyplot as plt
-# from mpl_toolkits.mplot3d import Axes3D
-
-from sklearn.gaussian_process import GaussianProcessClassifier
 
 
 class MLP:
+    """
+    Class implementing a Multi Layered Perceptron, capable of training using the log loss + dissonance
+    to be able to produce compatible updates.
+    """
 
-    def __init__(self, dataset_path, target_col, train_fraction, training_epochs,
+    def __init__(self, dataset_path, target_col, train_fraction, training_epochs, batch_size,
                  n_neurons_in_h1, n_neurons_in_h2, learning_rate, diss_weight, data_subset_ratio, model_before_update):
 
+        # ------------ #
+        # PREPARE DATA #
+        # ------------ #
+
+        # get rows and labels
         df = pd.read_csv(dataset_path)
-        # self.dict = defaultdict(LabelEncoder)
-        # df = df.apply(lambda x: self.dict[x.name].fit_transform(x))
         Y = df.pop(target_col)
         X = df.loc[:]
-
-        # data = datasets.load_breast_cancer()
-        # X = data.data[:, :]
-        # Y = data.target
 
         # min max scale and binarize the target labels
         scaler = MinMaxScaler()
@@ -44,175 +40,156 @@ class MLP:
         X = X[:int(rows*data_subset_ratio)]
         Y = Y[:int(rows*data_subset_ratio)]
 
+        # separate train and test subsets
         train_stop = int(len(X) * train_fraction)
+        X_train = X[:train_stop]
+        Y_train = Y[:train_stop]
+        X_test = X[train_stop:]
+        Y_test = Y[train_stop:]
 
-        X_ = X[:train_stop]
-        Y_ = Y[:train_stop]
+        # ------------ #
+        # CREATE MODEL #
+        # ------------ #
 
-        X_t = X[train_stop:]
-        Y_t = Y[train_stop:]
-
-        # # plot the first 3 PCA dimensions of the sampled data
-        # fig = plt.figure(1, figsize=(8, 6))
-        # ax = Axes3D(fig, elev=-150, azim=110)
-        # X_reduced = PCA(n_components=3).fit_transform(X_)
-        # ax.scatter(X_reduced[:, 0], X_reduced[:, 1], X_reduced[:, 2], c=Y_.ravel(),
-        #            cmap=plt.cm.Set1, edgecolor='k', s=40)
-        # ax.set_title("First three PCA directions")
-        # ax.set_xlabel("1st eigenvector")
-        # ax.w_xaxis.set_ticklabels([])
-        # ax.set_ylabel("2nd eigenvector")
-        # ax.w_yaxis.set_ticklabels([])
-        # ax.set_zlabel("3rd eigenvector")
-        # ax.w_zaxis.set_ticklabels([])
-        # plt.show()
-
-        #############################################
-        # create the TF neural net
         n_features = len(X[0])
         labels_dim = 1
 
-        # these placeholders serve as our input tensors
+        # these placeholders serve as the input tensors
         x = tf.placeholder(tf.float32, [None, n_features], name='input')
         y = tf.placeholder(tf.float32, [None, labels_dim], name='labels')
 
-        # input tensor for our reference model predictions
-        y_g = tf.placeholder(tf.float32, [None, labels_dim], name='labels')
+        # input tensor for the base model predictions
+        y_old_correct = tf.placeholder(tf.float32, [None, labels_dim], name='labels')
 
-        # TF Variables are our neural net parameter tensors, we initialize them to random (gaussian) values in
-        # Layer1. Variables are allowed to be persistent across training epochs and updatable bt TF operations
-        self.W1 = tf.Variable(tf.truncated_normal([n_features, n_neurons_in_h1], mean=0, stddev=1 / np.sqrt(n_features)),
-                         name='weights1')
+        # first layer
+        self.W1 = tf.Variable(tf.truncated_normal([n_features, n_neurons_in_h1], mean=0, stddev=1 / np.sqrt(n_features)), name='weights1')
         self.b1 = tf.Variable(tf.truncated_normal([n_neurons_in_h1], mean=0, stddev=1 / np.sqrt(n_features)), name='biases1')
-
-        # note the output tensor of the 1st layer is the activation applied to a
-        # linear transform of the layer 1 parameter tensors
-        # the matmul operation calculates the dot product between the tensors
         y1 = tf.sigmoid((tf.matmul(x, self.W1) + self.b1), name='activationLayer1')
 
-        # network parameters(weights and biases) are set and initialized (Layer2)
-        self.W2 = tf.Variable(tf.random_normal([n_neurons_in_h1, n_neurons_in_h2], mean=0, stddev=1),
-                         name='weights2')
+        # second layer
+        self.W2 = tf.Variable(tf.random_normal([n_neurons_in_h1, n_neurons_in_h2], mean=0, stddev=1), name='weights2')
         self.b2 = tf.Variable(tf.random_normal([n_neurons_in_h2], mean=0, stddev=1), name='biases2')
-        # activation function(sigmoid)
         y2 = tf.sigmoid((tf.matmul(y1, self.W2) + self.b2), name='activationLayer2')
 
-        # output layer weights and biases
-        self.Wo = tf.Variable(tf.random_normal([n_neurons_in_h2, labels_dim], mean=0, stddev=1 ),
-                         name='weightsOut')
+        # output layer
+        self.Wo = tf.Variable(tf.random_normal([n_neurons_in_h2, labels_dim], mean=0, stddev=1 ), name='weightsOut')
         self.bo = tf.Variable(tf.random_normal([labels_dim], mean=0, stddev=1), name='biasesOut')
-
-        # the sigmoid (binary softmax) activation is absorbed into TF's sigmoid_cross_entropy_with_logits loss
         logits = tf.matmul(y2, self.Wo) + self.bo
-        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = y, logits = logits)
+        output = tf.nn.sigmoid(logits, name='activationOutputLayer')
 
-        # tap a separate output that applies softmax activation to the output layer
-        # for training accuracy readout
-        a = tf.nn.sigmoid(logits, name='activationOutputLayer')
-
-        # compare predicted value from network with the expected value/target
-        correct_prediction = tf.equal(tf.round(a), y)
+        # accuracy tensors
+        correct_prediction = tf.equal(tf.round(output), y)
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name="Accuracy")
 
+        # loss tensor
+        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
         if model_before_update is not None:
 
             # dissonance calculation
-            correct_old = tf.cast(tf.equal(tf.round(y_g), y), tf.float32)
-            diss = correct_old * loss
-            loss = loss + diss_weight * diss
+            # correct_old = tf.cast(tf.equal(tf.round(y_old), y), tf.float32)
+            # dissonance = correct_old * loss
+            dissonance = y_old_correct * loss
+            loss = loss + diss_weight * dissonance
 
             # compatibility calculation
-            correct_new = tf.cast(tf.equal(tf.round(a), y), tf.float32)
-            compatibility = tf.reduce_sum(correct_old * correct_new) / tf.reduce_sum(correct_old)
+            correct_new = tf.cast(tf.equal(tf.round(output), y), tf.float32)
+            compatibility = tf.reduce_sum(y_old_correct * correct_new) / tf.reduce_sum(y_old_correct)
 
-        # optimizer used to compute gradient of loss and apply the parameter updates.
-        # the train_step object returned is ran by a TF Session to train the net
+        # ----------- #
+        # TRAIN MODEL #
+        # ----------- #
 
         train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
-
-        #############################################
-
-        # ***NOTE global_variables_initializer() must be called before creating a tf.Session()!***
         init_op = tf.global_variables_initializer()
-
-        # create a session for training and feedforward (prediction). Sessions are TF's way to run
-        # feed data to placeholders and variables, obtain outputs and update neural net parameters
-
         with tf.Session() as sess:
-            # ***initialization of all variables... NOTE this must be done before running any further sessions!***
             sess.run(init_op)
-
-            # training loop over the number of epochs
-            batch_size = 50
-            batches = int(len(X_) / batch_size)
+            batches = int(len(X_train) / batch_size)
+            acc = 0
+            com = 0
+            self.accuracy = 0
+            self.compatibility = 0
 
             if model_before_update is None:  # without compatibility
                 print("------------"
                       "\nTRAINING h1:\ntrain fraction = "+str(100*train_fraction)+"%\n")
+
                 for epoch in range(training_epochs):
                     losses = 0
                     accs = 0
                     for j in range(batches):
-                        idx = np.random.randint(X_.shape[0], size=batch_size)
-                        X_b = X_[idx]
-                        Y_b = Y_[idx]
+                        idx = np.random.randint(X_train.shape[0], size=batch_size)
+                        X_batch = X_train[idx]
+                        Y_batch = Y_train[idx]
 
-                        # train the network, note the dictionary of inputs and labels
-                        sess.run(train_step, feed_dict={x: X_b, y: Y_b})
-                        # feedforwad the same data and labels, but grab the accuracy and loss as outputs
-                        acc, l, soft_max_a = sess.run([accuracy, loss, a], feed_dict={x: X_b, y: Y_b})
-
-                        losses = losses + np.sum(l)
+                        # train the model, and then get the accuracy and loss from model
+                        sess.run(train_step, feed_dict={x: X_batch, y: Y_batch})
+                        acc, lss, out = sess.run([accuracy, loss, output], feed_dict={x: X_batch, y: Y_batch})
+                        losses = losses + np.sum(lss)
                         accs = accs + np.sum(acc)
+
                     print("%.3d" % (epoch+1) + "/" + str(training_epochs), "\tTRAIN: avg loss = %.4f" % (losses / batches),
                           "\tacc = %.4f" % (accs / batches))
 
-                    # test on the holdout set
-                    acc, l, soft_max_a = sess.run([accuracy, loss, a], feed_dict={x: X_t, y: Y_t})
-                    print("\t\tTEST:  loss = %.4f" % np.sum(l), "\tacc = %.4f" % acc)
+                    # test the model
+                    acc, lss, out = sess.run([accuracy, loss, output], feed_dict={x: X_test, y: Y_test})
+                    print("\t\t\tTEST:  loss = %.4f" % np.sum(lss), "\tacc = %.4f" % acc)
                     print()
+
+                    if acc > self.accuracy:
+                        self.accuracy = acc
 
             else:  # with compatibility
                 print("-------------------------------"
                       "\nTRAINING h2 COMPATIBLE WITH h1:\ntrain fraction = "+
                       str(100*train_fraction)+"%, diss weight = "+str(diss_weight)+"\n")
+
+                # get the old model predictions
+                Y_train_old = model_before_update.predict_probabilities(X_train)
+                Y_train_old_correct = tf.cast(tf.equal(tf.round(Y_train_old), Y_train), tf.float32).eval()
+
                 for epoch in range(training_epochs):
                     losses = 0
                     diss_losses = 0
                     accs = 0
                     for j in range(batches):
-                        idx = np.random.randint(X_.shape[0], size=batch_size)
-                        X_b = X_[idx]
-                        Y_b = Y_[idx]
+                        idx = np.random.randint(X_train.shape[0], size=batch_size)
+                        X_batch = X_train[idx]
+                        Y_batch = Y_train[idx]
+                        Y_batch_old_correct = Y_train_old_correct[idx]
 
-                        # get the old model predictions... and slice only the positive class probabilities
-                        Y_g = model_before_update.predict_probabilities(X_b)
-                        # Y_g = Y_g[:, 1].reshape((-1, 1))
-                        # Y_g = model_before_update.predict_proba(X_b)[:, 1].reshape((-1, 1))
-
-                        # train the network, note the dictionary of inputs and labels
-                        sess.run(train_step, feed_dict={x: X_b, y: Y_b, y_g: Y_g})
-                        # feedforwad the same data and labels, but grab the accuracy and loss as outputs
-                        acc, l, soft_max_a, l_2 = sess.run([accuracy, loss, a, diss],
-                                                           feed_dict={x: X_b, y: Y_b, y_g: Y_g})
-                        losses = losses + np.sum(l)
+                        # train the new model, and then get the accuracy and loss from it
+                        sess.run(train_step, feed_dict={x: X_batch, y: Y_batch, y_old_correct: Y_batch_old_correct})
+                        acc, lss, out, diss = sess.run([accuracy, loss, output, dissonance],
+                                                       feed_dict={x: X_batch, y: Y_batch, y_old_correct: Y_batch_old_correct})
+                        losses = losses + np.sum(lss)
                         accs = accs + np.sum(acc)
-                        diss_losses = diss_losses + np.sum(l_2)
+                        diss_losses = diss_losses + np.sum(diss)
 
                     print("%.3d" % (epoch+1) + "/" + str(training_epochs), "\tTRAIN: avg loss = %.4f" % (losses / batches),
                           "\tacc = %.4f" % (accs / batches))
 
-                    # test on the holdout set
-                    Y_g = model_before_update.predict_probabilities(X_t)
-                    # Y_g = model_before_update.predict_proba(X_t)[:, 1].reshape((-1, 1))
+                    # test the new model
+                    Y_old = model_before_update.predict_probabilities(X_test)
+                    Y_old_correct = tf.cast(tf.equal(tf.round(Y_old), Y_test), tf.float32).eval()
+                    acc, lss, out, com = sess.run([accuracy, loss, output, compatibility],
+                                                       feed_dict={x: X_test, y: Y_test, y_old_correct: Y_old_correct})
 
-                    acc, l, soft_max_a, com = sess.run([accuracy, loss, a, compatibility],
-                                                       feed_dict={x: X_t, y: Y_t, y_g: Y_g})
-                    print("\t\tTEST:  loss = %.4f" % np.sum(l), "\tacc = %.4f" % acc)
-                    print("\t\t       diss = %.4f" % diss_losses, "\t\tcom = %.4f " % com)
+                    print("\t\tTEST:  loss = %.4f" % np.sum(lss), "\tacc = %.4f" % acc)
+                    print("\t\t       diss = %.4f" % diss_losses, "\tcom = %.4f " % com)
                     print()
 
+                    # prioritize high accuracy over high compatibility
+                    if acc > self.accuracy:
+                        self.accuracy = acc
+                        self.compatibility = com
+
+
     def predict_probabilities(self, x):
+        """
+        predict the labels for dataset x
+        :param x: dataset to predict labels of
+        :return: numpy array with the probability for each label
+        """
         x = tf.cast(x, tf.float32)
         y1 = tf.sigmoid((tf.matmul(x, self.W1) + self.b1), name='activationLayer1')
         y2 = tf.sigmoid((tf.matmul(y1, self.W2) + self.b2), name='activationLayer2')
@@ -220,7 +197,22 @@ class MLP:
         return tf.nn.sigmoid(logits, name='activationOutputLayer').eval()
 
 
+# data
 dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\creditRiskAssessment\\heloc_dataset_v1.csv'
+results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment.csv"
 target_col = 'RiskPerformance'
-h1 = MLP(dataset_path, target_col, 0.05, 20, 10, 10, 0.05, 0.5, 1.0, None)
-h2 = MLP(dataset_path, target_col, 0.2, 20, 10, 10, 0.05, 0.5, 1.0, h1)
+
+# compute base model:
+h1 = MLP(dataset_path, target_col, 0.05, 100, 50, 10, 10, 0.02, 0.5, 1.0, None)
+with open(results_path, 'w', newline='') as csv_file:
+    writer = csv.writer(csv_file)
+    writer.writerow(["accuracy", "compatibility", "dissonance weight"])
+    writer.writerow([str(h1.accuracy), "(base accuracy)"])
+
+# train compatible models:
+for i in range(50, 51):
+    diss_weight = i/100.0
+    h2 = MLP(dataset_path, target_col, 0.2, 50, 50, 10, 10, 0.02, diss_weight, 1.0, h1)
+    with open(results_path, 'a', newline='') as csv_file:
+        writer = csv.writer(csv_file)
+        writer.writerow([str(h2.accuracy), str(h2.compatibility), str(diss_weight)])
