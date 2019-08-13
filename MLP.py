@@ -76,29 +76,29 @@ class MLP:
 
         # TF Variables are our neural net parameter tensors, we initialize them to random (gaussian) values in
         # Layer1. Variables are allowed to be persistent across training epochs and updatable bt TF operations
-        W1 = tf.Variable(tf.truncated_normal([n_features, n_neurons_in_h1], mean=0, stddev=1 / np.sqrt(n_features)),
+        self.W1 = tf.Variable(tf.truncated_normal([n_features, n_neurons_in_h1], mean=0, stddev=1 / np.sqrt(n_features)),
                          name='weights1')
-        b1 = tf.Variable(tf.truncated_normal([n_neurons_in_h1], mean=0, stddev=1 / np.sqrt(n_features)), name='biases1')
+        self.b1 = tf.Variable(tf.truncated_normal([n_neurons_in_h1], mean=0, stddev=1 / np.sqrt(n_features)), name='biases1')
 
         # note the output tensor of the 1st layer is the activation applied to a
         # linear transform of the layer 1 parameter tensors
         # the matmul operation calculates the dot product between the tensors
-        y1 = tf.sigmoid((tf.matmul(x, W1) + b1), name='activationLayer1')
+        y1 = tf.sigmoid((tf.matmul(x, self.W1) + self.b1), name='activationLayer1')
 
         # network parameters(weights and biases) are set and initialized (Layer2)
-        W2 = tf.Variable(tf.random_normal([n_neurons_in_h1, n_neurons_in_h2], mean=0, stddev=1),
+        self.W2 = tf.Variable(tf.random_normal([n_neurons_in_h1, n_neurons_in_h2], mean=0, stddev=1),
                          name='weights2')
-        b2 = tf.Variable(tf.random_normal([n_neurons_in_h2], mean=0, stddev=1), name='biases2')
+        self.b2 = tf.Variable(tf.random_normal([n_neurons_in_h2], mean=0, stddev=1), name='biases2')
         # activation function(sigmoid)
-        y2 = tf.sigmoid((tf.matmul(y1, W2) + b2), name='activationLayer2')
+        y2 = tf.sigmoid((tf.matmul(y1, self.W2) + self.b2), name='activationLayer2')
 
         # output layer weights and biases
-        Wo = tf.Variable(tf.random_normal([n_neurons_in_h2, labels_dim], mean=0, stddev=1 ),
+        self.Wo = tf.Variable(tf.random_normal([n_neurons_in_h2, labels_dim], mean=0, stddev=1 ),
                          name='weightsOut')
-        bo = tf.Variable(tf.random_normal([labels_dim], mean=0, stddev=1), name='biasesOut')
+        self.bo = tf.Variable(tf.random_normal([labels_dim], mean=0, stddev=1), name='biasesOut')
 
         # the sigmoid (binary softmax) activation is absorbed into TF's sigmoid_cross_entropy_with_logits loss
-        logits = (tf.matmul(y2, Wo) + bo)
+        logits = tf.matmul(y2, self.Wo) + self.bo
         loss = tf.nn.sigmoid_cross_entropy_with_logits(labels = y, logits = logits)
 
         # tap a separate output that applies softmax activation to the output layer
@@ -113,32 +113,21 @@ class MLP:
 
         # dissonance calculation
         if model_before_update is not None:
-            def dissonance(correct_label, old_prediction):
-                return tf.cond(correct_label == old_prediction, lambda: loss, lambda: 0)
+            def correct_old_predictions(old_predictions, correct_labels):
+                booleans = tf.equal(tf.round(old_predictions), correct_labels)
+                # ones = tf.ones_like(correct_labels)
+                # masked = tf.boolean_mask(ones, booleans)
+                masked = tf.where(booleans, tf.ones_like(correct_labels), tf.zeros_like(old_predictions))
+                # masked = tf.convert_to_tensor(masked, dtype=tf.float32)
+                return masked
 
-            diss = dissonance(y, y_g)
-
-            # combined loss, since the DKL loss can be negative, reverse its sign when negative
-            # basically an abs() but the demonstration is on how to use tf.cond() to check tensor values
-            diss = tf.cond(diss < 0, lambda: -1 * diss, lambda: diss)
-
-            # can also normalize the losses for stability but not done in this case
+            diss = correct_old_predictions(y_g, y) * loss
             loss = loss + diss_weight * diss
 
         # optimizer used to compute gradient of loss and apply the parameter updates.
         # the train_step object returned is ran by a TF Session to train the net
 
         train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
-
-        # todo: temporal 'old' model
-        from sklearn.gaussian_process.kernels import RBF
-        kernel = 1.0 * RBF(1.0)
-        gpc = GaussianProcessClassifier(kernel=kernel,
-                                        multi_class='one_vs_one',
-                                        random_state=0).fit(X_, Y_)
-
-        # lets see how good our fit on the train set is
-        print(gpc.score(X_, Y_))
 
         #############################################
 
@@ -153,7 +142,7 @@ class MLP:
             sess.run(init_op)
 
             # training loop over the number of epochs
-            batch_size = 5
+            batch_size = 50
             batches = int(len(X_) / batch_size)
 
             if model_before_update is None:  # without compatibility
@@ -182,15 +171,17 @@ class MLP:
             else:  # with compatibility
                 for epoch in range(training_epochs):
                     losses = 0
-                    dkl_losses = 0
+                    diss_losses = 0
                     accs = 0
                     for j in range(batches):
                         idx = np.random.randint(X_.shape[0], size=batch_size)
                         X_b = X_[idx]
                         Y_b = Y_[idx]
 
-                        # get the GPC predictions... and slice only the positive class probabilities
-                        Y_g = gpc.predict_proba(X_b)[:, 1].reshape((-1, 1))
+                        # get the old model predictions... and slice only the positive class probabilities
+                        Y_g = model_before_update.predict_proba(X_b)
+                        Y_g = Y_g[:, 1].reshape((-1, 1))
+                        # Y_g = model_before_update.predict_proba(X_b)[:, 1].reshape((-1, 1))
 
                         # train the network, note the dictionary of inputs and labels
                         sess.run(train_step, feed_dict={x: X_b, y: Y_b, y_g: Y_g})
@@ -200,20 +191,29 @@ class MLP:
 
                         losses = losses + np.sum(l)
                         accs = accs + np.sum(acc)
-                        dkl_losses = dkl_losses + np.sum(l_2)
+                        diss_losses = diss_losses + np.sum(l_2)
                     print("Epoch %.8d " % epoch, "avg train loss over", batches, " batches ", "%.4f" % (losses / batches),
-                          "DKL loss %.4f " % (dkl_losses / batches), "avg train acc ", "%.4f" % (accs / batches))
+                          "Dissonance %.4f " % (diss_losses / batches), "avg train acc ", "%.4f" % (accs / batches))
 
                     # test on the holdout set
-                    Y_g = gpc.predict_proba(X_t)[:, 1].reshape((-1, 1))
+                    Y_g = model_before_update.predict_proba(X_t)[:, 1]
+                    # Y_g = model_before_update.predict_proba(X_t)[:, 1].reshape((-1, 1))
 
                     acc, l, soft_max_a = sess.run([accuracy, loss, activation_output_layer], feed_dict={x: X_t, y: Y_t, y_g: Y_g})
                     print("Epoch %.8d " % epoch, "test loss %.4f" % np.sum(l),
-                          "DKL loss %.4f " % dkl_losses, "test acc %.4f" % acc)
+                          "Dissonance %.4f " % diss_losses, "test acc %.4f" % acc)
 
         print(soft_max_a)
+
+    def predict_proba(self, x):
+        x = tf.cast(x, tf.float32)
+        y1 = tf.sigmoid((tf.matmul(x, self.W1) + self.b1), name='activationLayer1')
+        y2 = tf.sigmoid((tf.matmul(y1, self.W2) + self.b2), name='activationLayer2')
+        logits = tf.matmul(y2, self.Wo) + self.bo
+        return tf.nn.sigmoid(logits, name='activationOutputLayer')
 
 
 dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\creditRiskAssessment\\heloc_dataset_v1.csv'
 target_col = 'RiskPerformance'
-h1 = MLP(dataset_path, target_col, 0.2, 100, 10, 10, 0.01, 0.5, None)
+h1 = MLP(dataset_path, target_col, 0.2, 20, 10, 10, 0.01, 0.5, None)
+h2 = MLP(dataset_path, target_col, 0.2, 100, 10, 10, 0.01, 0.5, h1)
