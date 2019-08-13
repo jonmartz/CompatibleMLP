@@ -16,7 +16,7 @@ from sklearn.gaussian_process import GaussianProcessClassifier
 class MLP:
 
     def __init__(self, dataset_path, target_col, train_fraction, training_epochs,
-                 n_neurons_in_h1, n_neurons_in_h2, learning_rate, diss_weight, model_before_update):
+                 n_neurons_in_h1, n_neurons_in_h2, learning_rate, diss_weight, data_subset_ratio, model_before_update):
 
         df = pd.read_csv(dataset_path)
         # self.dict = defaultdict(LabelEncoder)
@@ -35,9 +35,14 @@ class MLP:
         Y = label.fit_transform(Y)
 
         # shuffle dataset
-        idx = np.random.randint(X.shape[0], size=len(X))
+        rows = len(X)
+        idx = np.random.randint(X.shape[0], size=rows)
         X = X[idx]
         Y = Y[idx]
+
+        # extract dataset subset
+        X = X[:int(rows*data_subset_ratio)]
+        Y = Y[:int(rows*data_subset_ratio)]
 
         train_stop = int(len(X) * train_fraction)
 
@@ -103,26 +108,22 @@ class MLP:
 
         # tap a separate output that applies softmax activation to the output layer
         # for training accuracy readout
-        activation_output_layer = tf.nn.sigmoid(logits, name='activationOutputLayer')
+        a = tf.nn.sigmoid(logits, name='activationOutputLayer')
 
-        # prediction accuracy
         # compare predicted value from network with the expected value/target
-        correct_prediction = tf.equal(tf.round(activation_output_layer), y)
-        # accuracy determination
+        correct_prediction = tf.equal(tf.round(a), y)
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name="Accuracy")
 
-        # dissonance calculation
         if model_before_update is not None:
-            def correct_old_predictions(old_predictions, correct_labels):
-                booleans = tf.equal(tf.round(old_predictions), correct_labels)
-                # ones = tf.ones_like(correct_labels)
-                # masked = tf.boolean_mask(ones, booleans)
-                masked = tf.where(booleans, tf.ones_like(correct_labels), tf.zeros_like(old_predictions))
-                # masked = tf.convert_to_tensor(masked, dtype=tf.float32)
-                return masked
 
-            diss = correct_old_predictions(y_g, y) * loss
+            # dissonance calculation
+            correct_old = tf.cast(tf.equal(tf.round(y_g), y), tf.float32)
+            diss = correct_old * loss
             loss = loss + diss_weight * diss
+
+            # compatibility calculation
+            correct_new = tf.cast(tf.equal(tf.round(a), y), tf.float32)
+            compatibility = tf.reduce_sum(correct_old * correct_new) / tf.reduce_sum(correct_old)
 
         # optimizer used to compute gradient of loss and apply the parameter updates.
         # the train_step object returned is ran by a TF Session to train the net
@@ -146,6 +147,8 @@ class MLP:
             batches = int(len(X_) / batch_size)
 
             if model_before_update is None:  # without compatibility
+                print("------------"
+                      "\nTRAINING h1:\ntrain fraction = "+str(100*train_fraction)+"%\n")
                 for epoch in range(training_epochs):
                     losses = 0
                     accs = 0
@@ -157,18 +160,22 @@ class MLP:
                         # train the network, note the dictionary of inputs and labels
                         sess.run(train_step, feed_dict={x: X_b, y: Y_b})
                         # feedforwad the same data and labels, but grab the accuracy and loss as outputs
-                        acc, l, soft_max_a = sess.run([accuracy, loss, activation_output_layer], feed_dict={x: X_b, y: Y_b})
+                        acc, l, soft_max_a = sess.run([accuracy, loss, a], feed_dict={x: X_b, y: Y_b})
 
                         losses = losses + np.sum(l)
                         accs = accs + np.sum(acc)
-                    print("Epoch %.8d " % epoch, "avg train loss over", batches, " batches ", "%.4f" % (losses/batches),
-                          "avg train acc ", "%.4f" % (accs/batches))
+                    print("%.3d" % (epoch+1) + "/" + str(training_epochs), "\tTRAIN: avg loss = %.4f" % (losses / batches),
+                          "\tacc = ", "%.4f" % (accs / batches))
 
                     # test on the holdout set
-                    acc, l, soft_max_a = sess.run([accuracy, loss, activation_output_layer], feed_dict={x: X_t, y: Y_t})
-                    print("Epoch %.8d " % epoch, "test loss %.4f" % np.sum(l), "test acc %.4f" % acc)
+                    acc, l, soft_max_a = sess.run([accuracy, loss, a], feed_dict={x: X_t, y: Y_t})
+                    print("\t\tTEST:  loss = %.4f" % np.sum(l), "\tacc = %.4f" % acc)
+                    print()
 
             else:  # with compatibility
+                print("-------------------------------"
+                      "\nTRAINING h2 COMPATIBLE WITH h1:\ntrain fraction = "+
+                      str(100*train_fraction)+"%, diss weight = "+str(diss_weight)+"\n")
                 for epoch in range(training_epochs):
                     losses = 0
                     diss_losses = 0
@@ -179,41 +186,41 @@ class MLP:
                         Y_b = Y_[idx]
 
                         # get the old model predictions... and slice only the positive class probabilities
-                        Y_g = model_before_update.predict_proba(X_b)
-                        Y_g = Y_g[:, 1].reshape((-1, 1))
+                        Y_g = model_before_update.predict_probabilities(X_b)
+                        # Y_g = Y_g[:, 1].reshape((-1, 1))
                         # Y_g = model_before_update.predict_proba(X_b)[:, 1].reshape((-1, 1))
 
                         # train the network, note the dictionary of inputs and labels
                         sess.run(train_step, feed_dict={x: X_b, y: Y_b, y_g: Y_g})
                         # feedforwad the same data and labels, but grab the accuracy and loss as outputs
-                        acc, l, soft_max_a, l_2 = sess.run([accuracy, loss, activation_output_layer, diss],
+                        acc, l, soft_max_a, l_2 = sess.run([accuracy, loss, a, diss],
                                                            feed_dict={x: X_b, y: Y_b, y_g: Y_g})
-
                         losses = losses + np.sum(l)
                         accs = accs + np.sum(acc)
                         diss_losses = diss_losses + np.sum(l_2)
-                    print("Epoch %.8d " % epoch, "avg train loss over", batches, " batches ", "%.4f" % (losses / batches),
-                          "Dissonance %.4f " % (diss_losses / batches), "avg train acc ", "%.4f" % (accs / batches))
+
+                    print("%.3d" % (epoch+1) + "/" + str(training_epochs), "\tTRAIN: avg loss = %.4f" % (losses / batches),
+                          "\tacc = ", "%.4f" % (accs / batches))
 
                     # test on the holdout set
-                    Y_g = model_before_update.predict_proba(X_t)[:, 1]
+                    Y_g = model_before_update.predict_probabilities(X_t)
                     # Y_g = model_before_update.predict_proba(X_t)[:, 1].reshape((-1, 1))
 
-                    acc, l, soft_max_a = sess.run([accuracy, loss, activation_output_layer], feed_dict={x: X_t, y: Y_t, y_g: Y_g})
-                    print("Epoch %.8d " % epoch, "test loss %.4f" % np.sum(l),
-                          "Dissonance %.4f " % diss_losses, "test acc %.4f" % acc)
+                    acc, l, soft_max_a, com = sess.run([accuracy, loss, a, compatibility],
+                                                       feed_dict={x: X_t, y: Y_t, y_g: Y_g})
+                    print("\t\tTEST:  loss = %.4f" % np.sum(l), "\tacc = %.4f" % acc)
+                    print("\t\t       diss = %.4f" % diss_losses, "\t\tcom = %.4f " % com)
+                    print()
 
-        print(soft_max_a)
-
-    def predict_proba(self, x):
+    def predict_probabilities(self, x):
         x = tf.cast(x, tf.float32)
         y1 = tf.sigmoid((tf.matmul(x, self.W1) + self.b1), name='activationLayer1')
         y2 = tf.sigmoid((tf.matmul(y1, self.W2) + self.b2), name='activationLayer2')
         logits = tf.matmul(y2, self.Wo) + self.bo
-        return tf.nn.sigmoid(logits, name='activationOutputLayer')
+        return tf.nn.sigmoid(logits, name='activationOutputLayer').eval()
 
 
 dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\creditRiskAssessment\\heloc_dataset_v1.csv'
 target_col = 'RiskPerformance'
-h1 = MLP(dataset_path, target_col, 0.2, 20, 10, 10, 0.01, 0.5, None)
-h2 = MLP(dataset_path, target_col, 0.2, 100, 10, 10, 0.01, 0.5, h1)
+h1 = MLP(dataset_path, target_col, 0.05, 20, 10, 10, 0.05, 0.5, 1.0, None)
+h2 = MLP(dataset_path, target_col, 0.2, 20, 10, 10, 0.05, 0.5, 1.0, h1)
