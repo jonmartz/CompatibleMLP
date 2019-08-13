@@ -165,7 +165,7 @@ class MLP:
                         losses = losses + np.sum(l)
                         accs = accs + np.sum(acc)
                     print("%.3d" % (epoch+1) + "/" + str(training_epochs), "\tTRAIN: avg loss = %.4f" % (losses / batches),
-                          "\tacc = ", "%.4f" % (accs / batches))
+                          "\tacc = %.4f" % (accs / batches))
 
                     # test on the holdout set
                     acc, l, soft_max_a = sess.run([accuracy, loss, a], feed_dict={x: X_t, y: Y_t})
@@ -200,7 +200,7 @@ class MLP:
                         diss_losses = diss_losses + np.sum(l_2)
 
                     print("%.3d" % (epoch+1) + "/" + str(training_epochs), "\tTRAIN: avg loss = %.4f" % (losses / batches),
-                          "\tacc = ", "%.4f" % (accs / batches))
+                          "\tacc = %.4f" % (accs / batches))
 
                     # test on the holdout set
                     Y_g = model_before_update.predict_probabilities(X_t)
