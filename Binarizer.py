@@ -2,7 +2,7 @@ import csv
 import numpy as np
 
 
-def binarize(path, bin_count):
+def binarize(path, bin_count, diss_types):
     with open(path+".csv", 'r', newline='') as file_in:
         with open(path +"_" + str(bin_count) + "_bins.csv", 'w', newline='') as file_out:
             reader = csv.reader(file_in)
@@ -33,23 +33,36 @@ def binarize(path, bin_count):
                 if com > max_com:
                     max_com = com
 
-            # fill bins
+            # init bins
             bin_width = (max_com - min_com) / bin_count
             bins = []
             for i in range(bin_count):
-                bins += [[]]
+                bin = []
+                for j in range(diss_types):
+                    bin += [[]]
+                bins += [bin]
+
+            # fill bins
             for row in rows:
                 com = float(row[0])
-                bin_idx = int((com - min_com) / bin_width)
-                if bin_idx == bin_count:
-                    bin_idx = bin_count - 1
-                bin = bins[bin_idx]
-                bin += [(float(row[2]))]
+                i = int((com - min_com) / bin_width)
+                if i == bin_count:
+                    i = bin_count - 1
+                for j in range(diss_types):
+                    if row[2 + j] != "":
+                        bins[i][j] += [(float(row[2 + j]))]
 
             # write file
             for i in range(len(bins)):
-                if len(bins[i]) > 0:
-                    writer.writerow([str(min_com + (i + 0.5) * bin_width), str(base_acc), str(np.mean(bins[i]))])
+                bin = bins[i]
+                row = [str(min_com + (i + 0.5) * bin_width), str(base_acc)]
+                bin_empty = True
+                for j in range(diss_types):
+                    if len(bin[j]) != 0:
+                        bin_empty = False
+                        row += [str(np.mean(bin[j]))]
+                if not bin_empty:
+                    writer.writerow(row)
 
 
-binarize("C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment", 60)
+binarize("C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment", 30, 3)
