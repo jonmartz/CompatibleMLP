@@ -61,8 +61,11 @@ def binarize(path, bin_count, diss_types):
                     if len(bin[j]) != 0:
                         bin_empty = False
                         row += [str(np.mean(bin[j]))]
+                    else:
+                        row += [""]
                 if not bin_empty:
                     writer.writerow(row)
 
-
-binarize("C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment", 30, 3)
+results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\recividismPrediction"
+# results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\hospitalMortalityPrediction"
+binarize(results_path, 30, 3)

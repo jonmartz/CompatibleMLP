@@ -14,8 +14,8 @@ class MLP:
     """
 
     def __init__(self, X, Y, train_fraction, train_epochs, batch_size,
-                 layer_1_neurons, layer_2_neurons, learning_rate, diss_weight,
-                 old_model, dissonance_type):
+                 layer_1_neurons, layer_2_neurons, learning_rate, diss_weight=None,
+                 old_model=None, dissonance_type=None, make_h1_subset=None):
 
         start_time = int(round(time.time() * 1000))
 
@@ -23,8 +23,8 @@ class MLP:
         # PREPARE DATA #
         # ------------ #
 
-        # shuffle indexes
-        if old_model is None:
+        # shuffle indexes to cover train and test sets
+        if old_model is None or not make_h1_subset:
             shuffled_indexes = np.random.randint(len(X), size=len(X))
             train_stop = int(len(X) * train_fraction)
             self.train_indexes = shuffled_indexes[:train_stop]
@@ -36,11 +36,16 @@ class MLP:
             self.train_indexes = np.concatenate((old_model.train_indexes, shuffled_test_indexes[:test_stop]))
             self.test_indexes = shuffled_test_indexes[test_stop:]
 
-        # separate train and test subsets
+        # assign train and test subsets
         X_train = X[self.train_indexes]
         Y_train = Y[self.train_indexes]
         X_test = X[self.test_indexes]
         Y_test = Y[self.test_indexes]
+
+        # print("X_train = " + str(X_train))
+        # print("Y_train = " + str(Y_train))
+        # print("X_test = " + str(X_test))
+        # print("Y_test = " + str(Y_test))
 
         # ------------ #
         # CREATE MODEL #
@@ -79,26 +84,30 @@ class MLP:
         correct_prediction = tf.equal(tf.round(output), y)
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name="Accuracy")
 
-        # loss tensor
-        loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
-        if old_model is not None:
+        # logg loss
+        log_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
 
-            # dissonance calculation
-            if dissonance_type == "D":
-                dissonance = y_old_correct * loss
-            elif dissonance_type == "D'":
-                dissonance = tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_labels, logits=logits)
-            elif dissonance_type == "D''":
-                dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_labels, logits=logits)
-            else:
-                raise Exception("invalid dissonance type. The valid input strings are: D, D' and D''")
-            # todo
-            loss = loss + diss_weight * dissonance
-            # loss = dissonance
+        # dissonance calculation
+        if old_model is None:
+            pass
+        elif dissonance_type == "D":
+            dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
+        elif dissonance_type == "D'":
+            dissonance = tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_labels, logits=logits)
+        elif dissonance_type == "D''":
+            dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_labels, logits=logits)
+        else:
+            raise Exception("invalid dissonance type. The valid input strings are: D, D' and D''")
 
-            # compatibility calculation
-            y_new_correct = tf.cast(tf.equal(tf.round(output), y), tf.float32)
-            compatibility = tf.reduce_sum(y_old_correct * y_new_correct) / tf.reduce_sum(y_old_correct)
+        # loss computation
+        if old_model is None:
+            loss = log_loss
+        else:
+            loss = (1-diss_weight)*log_loss + diss_weight*dissonance
+
+        # compatibility calculation
+        y_new_correct = tf.cast(tf.equal(tf.round(output), y), tf.float32)
+        compatibility = tf.reduce_sum(y_old_correct * y_new_correct) / tf.reduce_sum(y_old_correct)
 
         # prepare training
         train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
@@ -134,11 +143,21 @@ class MLP:
                         accs = accs + np.sum(acc)
 
                     # test the model
-                    # acc, lss, out = sess.run([accuracy, loss, output], feed_dict={x: X_test, y: Y_test})
-                    # print(str(epoch + 1) + "/" + str(train_epochs) + "\ttrain acc = %.4f" % (accs / batches)
-                    #       + ", test acc = %.4f" % acc)
+                    acc, lss, out = sess.run([accuracy, loss, output], feed_dict={x: X_test, y: Y_test})
 
-                    # if acc > self.accuracy:
+                    # preds = tf.round(out).eval()
+                    # zeroes = 0
+                    # ones = 0
+                    # for pred in preds:
+                    #     if pred == 0.0:
+                    #         zeroes += 1
+                    #     else:
+                    #         ones += 1
+                    # print("ones = "+str(ones)+"/"+str(ones+zeroes))
+
+                    print(str(epoch + 1) + "/" + str(train_epochs) + "\ttrain acc = %.4f" % (accs / batches)
+                          + ", test acc = %.4f" % acc)
+
                     self.accuracy = acc
 
                 # save weights
@@ -152,7 +171,6 @@ class MLP:
                 print("test acc = %.4f" % acc)
 
             else:  # with compatibility
-                # min_loss = -1
                 print("\nTRAINING h2 COMPATIBLE WITH h1:\ntrain fraction = " +
                       str(int(100 * train_fraction)) + "%, diss weight = " + str(diss_weight)
                       + ", diss type = " + str(dissonance_type) + "\n")
@@ -165,8 +183,8 @@ class MLP:
                 Y_test_old_labels = tf.round(Y_test_old_probabilities).eval()
                 Y_test_old_correct = tf.cast(tf.equal(Y_test_old_labels, Y_test), tf.float32).eval()
 
+                # first = True
                 for epoch in range(train_epochs):
-                    # print("graph version = " + str(tf.get_default_graph().version))
                     losses = 0
                     diss_losses = 0
                     accs = 0
@@ -195,13 +213,24 @@ class MLP:
                                                              y_old_labels: Y_test_old_labels,
                                                              y_old_correct: Y_test_old_correct})
 
+                    # if first:
+                    #     first = False
+                    #     print("acc = "+str(acc))
+                    #
+                    # preds = tf.round(out).eval()
+                    # zeroes = 0
+                    # ones = 0
+                    # for pred in preds:
+                    #     if pred == 0.0:
+                    #         zeroes += 1
+                    #     else:
+                    #         ones += 1
+                    # if ones > 0:
+                    #     print("ones = " + str(ones) + ", epoch = " + str(epoch) + ", acc = "+str(acc))
+
                     # print(str(epoch + 1) + "/" + str(train_epochs) + "\ttrain acc = %.4f" % (accs / batches)
                     #       + ", test acc = %.4f" % acc + ", com = %.4f" % com)
 
-                    # prioritize high accuracy over high compatibility
-                    # curr_loss = sum(lss)
-                    # if min_loss == -1 or curr_loss < min_loss:
-                    #     min_loss = curr_loss
                     self.accuracy = acc
                     self.compatibility = com
 
@@ -229,18 +258,41 @@ class MLP:
 # ------------------ #
 # todo: MODIFY THESE #
 # ------------------ #
-dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\creditRiskAssessment\\heloc_dataset_v1.csv'
-results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment.csv"
-target_col = 'RiskPerformance'
-h1_train_fraction = 0.01
-h2_train_fraction = 0.1
-dataset_fraction = 0.5
-diss_weights = range(21)
+
+# Data-set paths
+# dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\creditRiskAssessment\\heloc_dataset_v1.csv'
+# results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment.csv"
+# target_col = 'RiskPerformance'
+
+# dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\hospitalMortalityPrediction\\ADMISSIONS_encoded.csv'
+# results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\hospitalMortalityPrediction.csv"
+# target_col = 'HOSPITAL_EXPIRE_FLAG'
+
+# dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\recividismPrediction\\compas-scores-two-years_encoded.csv'
+# results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\recividismPrediction.csv"
+# target_col = 'is_recid'
+
+dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\fraudDetection\\train_transaction_short_encoded.csv'
+results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\fraudDetection.csv"
+target_col = 'isFraud'
+
+# Data fractions
+# dataset_fraction = 0.5
+dataset_fraction = 0.2
+h1_train_fraction = 0.02
+h2_train_fraction = 0.2
+
+# Dissonance types
+# diss_types = ["D", "D'", "D''"]
+diss_types = ["D"]
+
+# Dissonance weights in [0,100] as percentages
+diss_weights = range(11)
 # diss_weights = [0]
-diss_types = ["D", "D'", "D''"]
-# diss_types = ["D"]
-factor = 5
+factor = 8  # multiplies the diss by this factor
 repetitions = 1
+
+# END OF MODIFYING SECTION #
 
 # get rows and labels
 df = pd.read_csv(dataset_path)
@@ -259,7 +311,7 @@ label = LabelBinarizer()
 Y = label.fit_transform(Y)
 
 # compute base model:
-h1 = MLP(X, Y, h1_train_fraction, 50, 50, 10, 5, 0.02, None, None, None)
+h1 = MLP(X, Y, h1_train_fraction, 200, 50, 10, 5, 0.02)
 with open(results_path, 'w', newline='') as csv_file:
     writer = csv.writer(csv_file)
     writer.writerow(["compatibility", "h1 accuracy", "h2 accuracy (D)", "h2 accuracy (D')", "h2 accuracy (D'')",
@@ -275,7 +327,7 @@ for i in diss_weights:
             print("-------\n"+str(iteration)+"/"+str(len(diss_weights) * repetitions * len(diss_types))+"\n-------")
             diss_weight = factor * i / 100.0
             tf.reset_default_graph()
-            h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.005, diss_weight, h1, diss_type)
+            h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.02, diss_weight, h1, diss_type, False)
             with open(results_path, 'a', newline='') as csv_file:
                 writer = csv.writer(csv_file)
                 row = [str(h2.compatibility), str(h1.accuracy)]
