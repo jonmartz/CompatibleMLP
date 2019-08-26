@@ -30,8 +30,11 @@ class MLP:
             self.train_indexes = shuffled_indexes[:train_stop]
             self.test_indexes = shuffled_indexes[train_stop:]
         else:  # make the old train set to be a subset of the new train set
-            shuffled = np.random.randint(len(old_model.test_indexes), size=len(old_model.test_indexes))
-            shuffled_test_indexes = old_model.test_indexes[shuffled]
+            # shuffled = np.random.randint(len(old_model.test_indexes), size=len(old_model.test_indexes))
+            # shuffled_test_indexes = old_model.test_indexes[shuffled]
+
+            # todo: trying to eliminate randomness here
+            shuffled_test_indexes = old_model.test_indexes
             test_stop = int(len(X) * train_fraction - len(old_model.train_indexes))
             self.train_indexes = np.concatenate((old_model.train_indexes, shuffled_test_indexes[:test_stop]))
             self.test_indexes = shuffled_test_indexes[test_stop:]
@@ -59,24 +62,39 @@ class MLP:
         y = tf.placeholder(tf.float32, [None, labels_dim], name='labels')
 
         # input tensor for the base model predictions
-        y_old_labels = tf.placeholder(tf.float32, [None, labels_dim], name='labels')
-        y_old_correct = tf.placeholder(tf.float32, [None, labels_dim], name='corrects')
+        y_old_labels = tf.placeholder(tf.float32, [None, labels_dim], name='old_labels')
+        y_old_correct = tf.placeholder(tf.float32, [None, labels_dim], name='old_corrects')
+
+        # set initial weights
+        if old_model is None or not make_h1_subset:
+            w1_initial = tf.truncated_normal([n_features, layer_1_neurons], mean=0, stddev=1 / np.sqrt(n_features))
+            b1_initial = tf.truncated_normal([layer_1_neurons], mean=0, stddev=1 / np.sqrt(n_features))
+            w2_initial = tf.random_normal([layer_1_neurons, layer_2_neurons], mean=0, stddev=1)
+            b2_initial = tf.random_normal([layer_2_neurons], mean=0, stddev=1)
+            wo_initial = tf.random_normal([layer_2_neurons, labels_dim], mean=0, stddev=1)
+            bo_initial = tf.random_normal([labels_dim], mean=0, stddev=1)
+        else:
+            # todo: trying to eliminate randomness here
+            w1_initial = tf.convert_to_tensor(old_model.final_W1)
+            b1_initial = tf.convert_to_tensor(old_model.final_b1)
+            w2_initial = tf.convert_to_tensor(old_model.final_W2)
+            b2_initial = tf.convert_to_tensor(old_model.final_b2)
+            wo_initial = tf.convert_to_tensor(old_model.final_Wo)
+            bo_initial = tf.convert_to_tensor(old_model.final_bo)
 
         # first layer
-        W1 = tf.Variable(
-            tf.truncated_normal([n_features, layer_1_neurons], mean=0, stddev=1 / np.sqrt(n_features)), name='weights1')
-        b1 = tf.Variable(tf.truncated_normal([layer_1_neurons], mean=0, stddev=1 / np.sqrt(n_features)),
-                              name='biases1')
+        W1 = tf.Variable(w1_initial, name='weights1')
+        b1 = tf.Variable(b1_initial, name='biases1')
         y1 = tf.sigmoid((tf.matmul(x, W1) + b1), name='activationLayer1')
 
         # second layer
-        W2 = tf.Variable(tf.random_normal([layer_1_neurons, layer_2_neurons], mean=0, stddev=1), name='weights2')
-        b2 = tf.Variable(tf.random_normal([layer_2_neurons], mean=0, stddev=1), name='biases2')
+        W2 = tf.Variable(w2_initial, name='weights2')
+        b2 = tf.Variable(b2_initial, name='biases2')
         y2 = tf.sigmoid((tf.matmul(y1, W2) + b2), name='activationLayer2')
 
         # output layer
-        Wo = tf.Variable(tf.random_normal([layer_2_neurons, labels_dim], mean=0, stddev=1), name='weightsOut')
-        bo = tf.Variable(tf.random_normal([labels_dim], mean=0, stddev=1), name='biasesOut')
+        Wo = tf.Variable(wo_initial, name='weightsOut')
+        bo = tf.Variable(bo_initial, name='biasesOut')
         logits = tf.matmul(y2, Wo) + bo
         output = tf.nn.sigmoid(logits, name='activationOutputLayer')
 
@@ -84,7 +102,7 @@ class MLP:
         correct_prediction = tf.equal(tf.round(output), y)
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name="Accuracy")
 
-        # logg loss
+        # log loss
         log_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
 
         # dissonance calculation
@@ -131,10 +149,18 @@ class MLP:
                 for epoch in range(train_epochs):
                     losses = 0
                     accs = 0
-                    for j in range(batches):
-                        shuffled_indexes = np.random.randint(X_train.shape[0], size=batch_size)
-                        X_batch = X_train[shuffled_indexes]
-                        Y_batch = Y_train[shuffled_indexes]
+                    for batch in range(batches + 1):
+                        # shuffled_indexes = np.random.randint(X_train.shape[0], size=batch_size)
+                        # X_batch = X_train[shuffled_indexes]
+                        # Y_batch = Y_train[shuffled_indexes]
+
+                        # todo: trying to eliminate randomness here
+                        batch_start = batch * batch_size
+                        if batch_start == X_train.shape[0]:
+                            continue  # in case the len of train set is a multiple of batch size
+                        batch_end = min((batch + 1) * batch_size, X_train.shape[0])
+                        X_batch = X_train[batch_start:batch_end]
+                        Y_batch = Y_train[batch_start:batch_end]
 
                         # train the model, and then get the accuracy and loss from model
                         sess.run(train_step, feed_dict={x: X_batch, y: Y_batch})
@@ -188,12 +214,22 @@ class MLP:
                     losses = 0
                     diss_losses = 0
                     accs = 0
-                    for j in range(batches):
-                        shuffled_indexes = np.random.randint(X_train.shape[0], size=batch_size)
-                        X_batch = X_train[shuffled_indexes]
-                        Y_batch = Y_train[shuffled_indexes]
-                        Y_batch_old_labels = Y_train_old_labels[shuffled_indexes]
-                        Y_batch_old_correct = Y_train_old_correct[shuffled_indexes]
+                    for batch in range(batches):
+                        # shuffled_indexes = np.random.randint(X_train.shape[0], size=batch_size)
+                        # X_batch = X_train[shuffled_indexes]
+                        # Y_batch = Y_train[shuffled_indexes]
+                        # Y_batch_old_labels = Y_train_old_labels[shuffled_indexes]
+                        # Y_batch_old_correct = Y_train_old_correct[shuffled_indexes]
+
+                        # todo: trying to eliminate randomness here
+                        batch_start = batch * batch_size
+                        if batch_start == X_train.shape[0]:
+                            continue  # in case the len of train set is a multiple of batch size
+                        batch_end = min((batch + 1) * batch_size, X_train.shape[0])
+                        X_batch = X_train[batch_start:batch_end]
+                        Y_batch = Y_train[batch_start:batch_end]
+                        Y_batch_old_labels = Y_train_old_labels[batch_start:batch_end]
+                        Y_batch_old_correct = Y_train_old_correct[batch_start:batch_end]
 
                         # train the new model, and then get the accuracy and loss from it
                         sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
@@ -203,6 +239,9 @@ class MLP:
                                                        feed_dict={x: X_batch, y: Y_batch,
                                                                   y_old_labels: Y_batch_old_labels,
                                                                   y_old_correct: Y_batch_old_correct})
+                        # if losses == 0 and epoch == 0:
+                        #     print(diss_type + ": "+str(diss))
+
                         losses = losses + np.sum(lss)
                         accs = accs + np.sum(acc)
                         diss_losses = diss_losses + np.sum(diss)
@@ -277,19 +316,20 @@ results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\
 target_col = 'isFraud'
 
 # Data fractions
-# dataset_fraction = 0.5
-dataset_fraction = 0.2
+dataset_fraction = 0.5
+# dataset_fraction = 0.2
 h1_train_fraction = 0.02
 h2_train_fraction = 0.2
 
 # Dissonance types
 # diss_types = ["D", "D'", "D''"]
+# diss_types = ["D", "D'"]
 diss_types = ["D"]
 
 # Dissonance weights in [0,100] as percentages
-diss_weights = range(11)
+diss_weights = range(21)
 # diss_weights = [0]
-factor = 8  # multiplies the diss by this factor
+factor = 4  # multiplies the diss by this factor
 repetitions = 1
 
 # END OF MODIFYING SECTION #
@@ -311,7 +351,7 @@ label = LabelBinarizer()
 Y = label.fit_transform(Y)
 
 # compute base model:
-h1 = MLP(X, Y, h1_train_fraction, 200, 50, 10, 5, 0.02)
+h1 = MLP(X, Y, h1_train_fraction, 50, 50, 10, 5, 0.02)
 with open(results_path, 'w', newline='') as csv_file:
     writer = csv.writer(csv_file)
     writer.writerow(["compatibility", "h1 accuracy", "h2 accuracy (D)", "h2 accuracy (D')", "h2 accuracy (D'')",
@@ -327,7 +367,7 @@ for i in diss_weights:
             print("-------\n"+str(iteration)+"/"+str(len(diss_weights) * repetitions * len(diss_types))+"\n-------")
             diss_weight = factor * i / 100.0
             tf.reset_default_graph()
-            h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.02, diss_weight, h1, diss_type, False)
+            h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True)
             with open(results_path, 'a', newline='') as csv_file:
                 writer = csv.writer(csv_file)
                 row = [str(h2.compatibility), str(h1.accuracy)]
