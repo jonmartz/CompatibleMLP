@@ -13,9 +13,8 @@ class MLP:
     to be able to produce compatible updates.
     """
 
-    def __init__(self, X, Y, train_fraction, train_epochs, batch_size,
-                 layer_1_neurons, layer_2_neurons, learning_rate, diss_weight=None,
-                 old_model=None, dissonance_type=None, make_h1_subset=None):
+    def __init__(self, X, Y, train_fraction, train_epochs, batch_size, layer_sizes, learning_rate,
+                 diss_weight=None, old_model=None, dissonance_type=None, make_h1_subset=None):
 
         start_time = int(round(time.time() * 1000))
 
@@ -66,37 +65,41 @@ class MLP:
         y_old_correct = tf.placeholder(tf.float32, [None, labels_dim], name='old_corrects')
 
         # set initial weights
+        initial_weights = []
+        initial_biases = []
         if old_model is None or not make_h1_subset:
-            w1_initial = tf.truncated_normal([n_features, layer_1_neurons], mean=0, stddev=1 / np.sqrt(n_features))
-            b1_initial = tf.truncated_normal([layer_1_neurons], mean=0, stddev=1 / np.sqrt(n_features))
-            w2_initial = tf.random_normal([layer_1_neurons, layer_2_neurons], mean=0, stddev=1)
-            b2_initial = tf.random_normal([layer_2_neurons], mean=0, stddev=1)
-            wo_initial = tf.random_normal([layer_2_neurons, labels_dim], mean=0, stddev=1)
-            bo_initial = tf.random_normal([labels_dim], mean=0, stddev=1)
+            initial_weights += [tf.truncated_normal([n_features, layer_sizes[0]], mean=0, stddev=1 / np.sqrt(n_features))]
+            initial_biases += [tf.truncated_normal([layer_sizes[0]], mean=0, stddev=1 / np.sqrt(n_features))]
+
+            for i in range(len(layer_sizes) - 1):
+                initial_weights += [tf.random_normal([layer_sizes[i], layer_sizes[i + 1]], mean=0, stddev=1)]
+                initial_biases += [tf.random_normal([layer_sizes[i + 1]], mean=0, stddev=1)]
+
+            initial_weights += [tf.random_normal([layer_sizes[-1], labels_dim], mean=0, stddev=1)]
+            initial_biases += [tf.random_normal([labels_dim], mean=0, stddev=1)]
         else:
             # todo: trying to eliminate randomness here
-            w1_initial = tf.convert_to_tensor(old_model.final_W1)
-            b1_initial = tf.convert_to_tensor(old_model.final_b1)
-            w2_initial = tf.convert_to_tensor(old_model.final_W2)
-            b2_initial = tf.convert_to_tensor(old_model.final_b2)
-            wo_initial = tf.convert_to_tensor(old_model.final_Wo)
-            bo_initial = tf.convert_to_tensor(old_model.final_bo)
+            for layer_weights in old_model.final_weights:
+                initial_weights += [tf.convert_to_tensor(layer_weights)]
+            for layer_biases in old_model.final_biases:
+                initial_biases += [tf.convert_to_tensor(layer_biases)]
 
         # first layer
-        W1 = tf.Variable(w1_initial, name='weights1')
-        b1 = tf.Variable(b1_initial, name='biases1')
-        y1 = tf.sigmoid((tf.matmul(x, W1) + b1), name='activationLayer1')
+        weights = [tf.Variable(initial_weights[0], name='weights_In')]
+        biases = [tf.Variable(initial_biases[0], name='biases_In')]
+        activations = [tf.sigmoid((tf.matmul(x, weights[0]) + biases[0]), name='activation_In')]
 
         # second layer
-        W2 = tf.Variable(w2_initial, name='weights2')
-        b2 = tf.Variable(b2_initial, name='biases2')
-        y2 = tf.sigmoid((tf.matmul(y1, W2) + b2), name='activationLayer2')
+        for i in range(len(initial_weights) - 1)[1:]:
+            weights += [tf.Variable(initial_weights[i], name='weights_'+str(i))]
+            biases += [tf.Variable(initial_biases[i], name='biases_'+str(i))]
+            activations += [tf.sigmoid((tf.matmul(activations[i-1], weights[i]) + biases[i]), name='activation_'+str(i))]
 
         # output layer
-        Wo = tf.Variable(wo_initial, name='weightsOut')
-        bo = tf.Variable(bo_initial, name='biasesOut')
-        logits = tf.matmul(y2, Wo) + bo
-        output = tf.nn.sigmoid(logits, name='activationOutputLayer')
+        weights += [tf.Variable(initial_weights[-1], name='weights_Out')]
+        biases += [tf.Variable(initial_biases[-1], name='biases_Out')]
+        logits = tf.matmul(activations[-1], weights[-1]) + biases[-1]
+        output = tf.nn.sigmoid(logits, name='activation_Out')
 
         # accuracy tensors
         correct_prediction = tf.equal(tf.round(output), y)
@@ -186,13 +189,13 @@ class MLP:
 
                     self.accuracy = acc
 
-                # save weights
-                self.final_W1 = W1.eval()
-                self.final_b1 = b1.eval()
-                self.final_W2 = W2.eval()
-                self.final_b2 = b2.eval()
-                self.final_Wo = Wo.eval()
-                self.final_bo = bo.eval()
+                # save weights and biases
+                self.final_weights = []
+                self.final_biases = []
+                for layer_weights in weights:
+                    self.final_weights += [layer_weights.eval()]
+                for layer_biases in biases:
+                    self.final_biases += [layer_biases.eval()]
 
                 print("test acc = %.4f" % acc)
 
@@ -288,9 +291,10 @@ class MLP:
         #       + "\nW2 = " + str(self.final_W2[:3]) + "\nb2 = " + str(self.final_b2[:3])
         #       + "\nWo = " + str(self.final_Wo[:3]) + "\nbo = " + str(self.final_bo[:3]))
         x = tf.cast(x, tf.float32).eval()
-        y1 = tf.sigmoid((tf.matmul(x, self.final_W1) + self.final_b1)).eval()
-        y2 = tf.sigmoid((tf.matmul(y1, self.final_W2) + self.final_b2)).eval()
-        logits = (tf.matmul(y2, self.final_Wo) + self.final_bo).eval()
+        y = tf.sigmoid((tf.matmul(x, self.final_weights[0]) + self.final_biases[0])).eval()
+        for i in range(len(self.final_weights)-1)[1:]:
+            y = tf.sigmoid((tf.matmul(y, self.final_weights[i]) + self.final_biases[i])).eval()
+        logits = (tf.matmul(y, self.final_weights[-1]) + self.final_biases[-1]).eval()
         return tf.nn.sigmoid(logits, name='activationOutputLayer').eval()
 
 
@@ -299,9 +303,9 @@ class MLP:
 # ------------------ #
 
 # Data-set paths
-# dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\creditRiskAssessment\\heloc_dataset_v1.csv'
-# results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment.csv"
-# target_col = 'RiskPerformance'
+dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\creditRiskAssessment\\heloc_dataset_v1.csv'
+results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment.csv"
+target_col = 'RiskPerformance'
 
 # dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\hospitalMortalityPrediction\\ADMISSIONS_encoded.csv'
 # results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\hospitalMortalityPrediction.csv"
@@ -311,9 +315,9 @@ class MLP:
 # results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\recividismPrediction.csv"
 # target_col = 'is_recid'
 
-dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\fraudDetection\\train_transaction_short_encoded.csv'
-results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\fraudDetection.csv"
-target_col = 'isFraud'
+# dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\fraudDetection\\train_transaction_short_encoded.csv'
+# results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\fraudDetection.csv"
+# target_col = 'isFraud'
 
 # Data fractions
 dataset_fraction = 0.5
@@ -351,7 +355,7 @@ label = LabelBinarizer()
 Y = label.fit_transform(Y)
 
 # compute base model:
-h1 = MLP(X, Y, h1_train_fraction, 50, 50, 10, 5, 0.02)
+h1 = MLP(X, Y, h1_train_fraction, 50, 50, [10, 5], 0.02)
 with open(results_path, 'w', newline='') as csv_file:
     writer = csv.writer(csv_file)
     writer.writerow(["compatibility", "h1 accuracy", "h2 accuracy (D)", "h2 accuracy (D')", "h2 accuracy (D'')",
@@ -367,7 +371,7 @@ for i in diss_weights:
             print("-------\n"+str(iteration)+"/"+str(len(diss_weights) * repetitions * len(diss_types))+"\n-------")
             diss_weight = factor * i / 100.0
             tf.reset_default_graph()
-            h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True)
+            h2 = MLP(X, Y, h2_train_fraction, 200, 50, [10, 5], 0.02, diss_weight, h1, diss_type, True)
             with open(results_path, 'a', newline='') as csv_file:
                 writer = csv.writer(csv_file)
                 row = [str(h2.compatibility), str(h1.accuracy)]
