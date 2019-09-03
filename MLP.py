@@ -2,6 +2,7 @@ import csv
 import tensorflow as tf
 import numpy as np
 import pandas as pd
+import sklearn.metrics
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import LabelBinarizer
 import time
@@ -15,7 +16,7 @@ class MLP:
 
     def __init__(self, X, Y, train_fraction, train_epochs, batch_size,
                  layer_1_neurons, layer_2_neurons, learning_rate, diss_weight=None,
-                 old_model=None, dissonance_type=None, make_h1_subset=None):
+                 old_model=None, dissonance_type=None, make_h1_subset=True, copy_h1_weights=True):
 
         start_time = int(round(time.time() * 1000))
 
@@ -62,11 +63,11 @@ class MLP:
         y = tf.placeholder(tf.float32, [None, labels_dim], name='labels')
 
         # input tensor for the base model predictions
-        y_old_labels = tf.placeholder(tf.float32, [None, labels_dim], name='old_labels')
+        y_old_probabilities = tf.placeholder(tf.float32, [None, labels_dim], name='old_probabilities')
         y_old_correct = tf.placeholder(tf.float32, [None, labels_dim], name='old_corrects')
 
         # set initial weights
-        if old_model is None or not make_h1_subset:
+        if old_model is None or not copy_h1_weights:
             w1_initial = tf.truncated_normal([n_features, layer_1_neurons], mean=0, stddev=1 / np.sqrt(n_features))
             b1_initial = tf.truncated_normal([layer_1_neurons], mean=0, stddev=1 / np.sqrt(n_features))
             w2_initial = tf.random_normal([layer_1_neurons, layer_2_neurons], mean=0, stddev=1)
@@ -98,7 +99,7 @@ class MLP:
         logits = tf.matmul(y2, Wo) + bo
         output = tf.nn.sigmoid(logits, name='activationOutputLayer')
 
-        # accuracy tensors
+        # model evaluation tensors
         correct_prediction = tf.equal(tf.round(output), y)
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name="Accuracy")
 
@@ -111,9 +112,9 @@ class MLP:
         elif dissonance_type == "D":
             dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
         elif dissonance_type == "D'":
-            dissonance = tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_labels, logits=logits)
+            dissonance = tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_probabilities, logits=logits)
         elif dissonance_type == "D''":
-            dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_labels, logits=logits)
+            dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_probabilities, logits=logits)
         else:
             raise Exception("invalid dissonance type. The valid input strings are: D, D' and D''")
 
@@ -185,6 +186,7 @@ class MLP:
                           + ", test acc = %.4f" % acc)
 
                     self.accuracy = acc
+                    self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
 
                 # save weights
                 self.final_W1 = W1.eval()
@@ -194,7 +196,7 @@ class MLP:
                 self.final_Wo = Wo.eval()
                 self.final_bo = bo.eval()
 
-                print("test acc = %.4f" % acc)
+                print("test auc = %.4f" % self.auc)
 
             else:  # with compatibility
                 print("\nTRAINING h2 COMPATIBLE WITH h1:\ntrain fraction = " +
@@ -228,16 +230,16 @@ class MLP:
                         batch_end = min((batch + 1) * batch_size, X_train.shape[0])
                         X_batch = X_train[batch_start:batch_end]
                         Y_batch = Y_train[batch_start:batch_end]
-                        Y_batch_old_labels = Y_train_old_labels[batch_start:batch_end]
+                        Y_batch_old_probabilities = Y_train_old_probabilities[batch_start:batch_end]
                         Y_batch_old_correct = Y_train_old_correct[batch_start:batch_end]
 
                         # train the new model, and then get the accuracy and loss from it
                         sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
-                                                        y_old_labels: Y_batch_old_labels,
+                                                        y_old_probabilities: Y_batch_old_probabilities,
                                                         y_old_correct: Y_batch_old_correct})
                         acc, lss, out, diss = sess.run([accuracy, loss, output, dissonance],
                                                        feed_dict={x: X_batch, y: Y_batch,
-                                                                  y_old_labels: Y_batch_old_labels,
+                                                                  y_old_probabilities: Y_batch_old_probabilities,
                                                                   y_old_correct: Y_batch_old_correct})
                         # if losses == 0 and epoch == 0:
                         #     print(diss_type + ": "+str(diss))
@@ -249,7 +251,7 @@ class MLP:
                     # test the new model
                     acc, lss, out, com = sess.run([accuracy, loss, output, compatibility],
                                                   feed_dict={x: X_test, y: Y_test,
-                                                             y_old_labels: Y_test_old_labels,
+                                                             y_old_probabilities: Y_test_old_probabilities,
                                                              y_old_correct: Y_test_old_correct})
 
                     # if first:
@@ -272,8 +274,9 @@ class MLP:
 
                     self.accuracy = acc
                     self.compatibility = com
+                    self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
 
-                print("FINISHED:\ttest accuracy = %.4f" % self.accuracy + ", compatibility = %.4f" % self.compatibility)
+                print("FINISHED:\ttest auc = %.4f" % self.auc + ", compatibility = %.4f" % self.compatibility)
 
             runtime = str(int((round(time.time() * 1000))-start_time)/1000)
             print("runtime = " + str(runtime) + " secs\n")
@@ -299,9 +302,9 @@ class MLP:
 # ------------------ #
 
 # Data-set paths
-# dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\creditRiskAssessment\\heloc_dataset_v1.csv'
-# results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment.csv"
-# target_col = 'RiskPerformance'
+dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\creditRiskAssessment\\heloc_dataset_v1.csv'
+results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\creditRiskAssessment.csv"
+target_col = 'RiskPerformance'
 
 # dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\hospitalMortalityPrediction\\ADMISSIONS_encoded.csv'
 # results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\hospitalMortalityPrediction.csv"
@@ -311,9 +314,9 @@ class MLP:
 # results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\recividismPrediction.csv"
 # target_col = 'is_recid'
 
-dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\fraudDetection\\train_transaction_short_encoded.csv'
-results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\fraudDetection.csv"
-target_col = 'isFraud'
+# dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\fraudDetection\\transactions.csv'
+# results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\fraudDetection.csv"
+# target_col = 'isFraud'
 
 # Data fractions
 dataset_fraction = 0.5
@@ -322,14 +325,14 @@ h1_train_fraction = 0.02
 h2_train_fraction = 0.2
 
 # Dissonance types
-# diss_types = ["D", "D'", "D''"]
-# diss_types = ["D", "D'"]
-diss_types = ["D"]
+diss_types = ["D", "D'", "D''"]
+# diss_types = ["D", "D''"]
+# diss_types = ["D"]
 
 # Dissonance weights in [0,100] as percentages
-diss_weights = range(21)
+diss_weights = range(41)
 # diss_weights = [0]
-factor = 4  # multiplies the diss by this factor
+factor = 2  # multiplies the diss by this factor
 repetitions = 1
 
 # END OF MODIFYING SECTION #
@@ -351,10 +354,10 @@ label = LabelBinarizer()
 Y = label.fit_transform(Y)
 
 # compute base model:
-h1 = MLP(X, Y, h1_train_fraction, 50, 50, 10, 5, 0.02)
+h1 = MLP(X, Y, h1_train_fraction, 200, 50, 10, 5, 0.02)
 with open(results_path, 'w', newline='') as csv_file:
     writer = csv.writer(csv_file)
-    writer.writerow(["compatibility", "h1 accuracy", "h2 accuracy (D)", "h2 accuracy (D')", "h2 accuracy (D'')",
+    writer.writerow(["compatibility", "h1 auc", "h2 auc (D)", "h2 auc (D')", "h2 auc (D'')",
                      "dissonance weight", "h1 train fraction = " + str(h1_train_fraction), "h2 train fraction = " + str(h2_train_fraction)])
 
 # train compatible models:
@@ -367,13 +370,13 @@ for i in diss_weights:
             print("-------\n"+str(iteration)+"/"+str(len(diss_weights) * repetitions * len(diss_types))+"\n-------")
             diss_weight = factor * i / 100.0
             tf.reset_default_graph()
-            h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True)
+            h2 = MLP(X, Y, h2_train_fraction, 300, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True, True)
             with open(results_path, 'a', newline='') as csv_file:
                 writer = csv.writer(csv_file)
-                row = [str(h2.compatibility), str(h1.accuracy)]
+                row = [str(h2.compatibility), str(h1.auc)]
                 for k in diss_types:
                     row += [""]
                 row += [str(diss_weight)]
-                row[2 + offset] = str(h2.accuracy)
+                row[2 + offset] = str(h2.auc)
                 writer.writerow(row)
             offset += 1

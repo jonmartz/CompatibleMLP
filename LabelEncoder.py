@@ -58,7 +58,8 @@ def encode(path, cols_to_encode, make_balanced=False, zeroes_fraction=None, ones
 # cols_to_encode = [1,3,9,10]
 # dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\recividismPrediction\\compas-scores-two-years'
 
-cols_to_encode = [2,3]
-dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\fraudDetection\\train_transaction_short'
+cols_to_encode = [3,4,5,6,7,8,9,10,11,12,43,44,45,46,47,48,49,50,51]
+dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\fraudDetection\\train_short'
 
 encode(dataset_path, cols_to_encode)
+
