@@ -182,11 +182,11 @@ class MLP:
                     #         ones += 1
                     # print("ones = "+str(ones)+"/"+str(ones+zeroes))
 
-                    print(str(epoch + 1) + "/" + str(train_epochs) + "\ttrain acc = %.4f" % (accs / batches)
-                          + ", test acc = %.4f" % acc)
-
                     self.accuracy = acc
                     self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
+
+                    print(str(epoch + 1) + "/" + str(train_epochs) + "\ttrain acc = %.4f" % (accs / batches)
+                          + ", test auc = %.4f" % self.auc)
 
                 # save weights
                 self.final_W1 = W1.eval()
@@ -272,10 +272,13 @@ class MLP:
                     # print(str(epoch + 1) + "/" + str(train_epochs) + "\ttrain acc = %.4f" % (accs / batches)
                     #       + ", test acc = %.4f" % acc + ", com = %.4f" % com)
 
+                    self.output = out
                     self.accuracy = acc
                     self.compatibility = com
-                    self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
 
+                    # self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
+
+                self.auc = sklearn.metrics.roc_auc_score(Y_test, self.output)
                 print("FINISHED:\ttest auc = %.4f" % self.auc + ", compatibility = %.4f" % self.compatibility)
 
             runtime = str(int((round(time.time() * 1000))-start_time)/1000)
@@ -330,9 +333,9 @@ diss_types = ["D", "D'", "D''"]
 # diss_types = ["D"]
 
 # Dissonance weights in [0,100] as percentages
-diss_weights = range(41)
+diss_weights = range(11)
 # diss_weights = [0]
-factor = 2  # multiplies the diss by this factor
+factor = 8  # multiplies the diss by this factor
 repetitions = 1
 
 # END OF MODIFYING SECTION #
@@ -370,7 +373,7 @@ for i in diss_weights:
             print("-------\n"+str(iteration)+"/"+str(len(diss_weights) * repetitions * len(diss_types))+"\n-------")
             diss_weight = factor * i / 100.0
             tf.reset_default_graph()
-            h2 = MLP(X, Y, h2_train_fraction, 300, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True, True)
+            h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True, True)
             with open(results_path, 'a', newline='') as csv_file:
                 writer = csv.writer(csv_file)
                 row = [str(h2.compatibility), str(h1.auc)]
