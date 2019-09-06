@@ -16,7 +16,8 @@ class MLP:
 
     def __init__(self, X, Y, train_fraction, train_epochs, batch_size,
                  layer_1_neurons, layer_2_neurons, learning_rate, diss_weight=None,
-                 old_model=None, dissonance_type=None, make_h1_subset=True, copy_h1_weights=True):
+                 old_model=None, dissonance_type=None, make_h1_subset=True, copy_h1_weights=True,
+                 history=None):
 
         start_time = int(round(time.time() * 1000))
 
@@ -75,7 +76,6 @@ class MLP:
             wo_initial = tf.random_normal([layer_2_neurons, labels_dim], mean=0, stddev=1)
             bo_initial = tf.random_normal([labels_dim], mean=0, stddev=1)
         else:
-            # todo: trying to eliminate randomness here
             w1_initial = tf.convert_to_tensor(old_model.final_W1)
             b1_initial = tf.convert_to_tensor(old_model.final_b1)
             w2_initial = tf.convert_to_tensor(old_model.final_W2)
@@ -103,26 +103,34 @@ class MLP:
         correct_prediction = tf.equal(tf.round(output), y)
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name="Accuracy")
 
-        # log loss
         log_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
-
-        # dissonance calculation
-        if old_model is None:
-            pass
-        elif dissonance_type == "D":
-            dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
-        elif dissonance_type == "D'":
-            dissonance = tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_probabilities, logits=logits)
-        elif dissonance_type == "D''":
-            dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_probabilities, logits=logits)
-        else:
-            raise Exception("invalid dissonance type. The valid input strings are: D, D' and D''")
 
         # loss computation
         if old_model is None:
             loss = log_loss
         else:
-            loss = (1-diss_weight)*log_loss + diss_weight*dissonance
+            # dissonance computation
+            if dissonance_type == "D":
+                dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
+            elif dissonance_type == "D'":
+                dissonance = tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_probabilities, logits=logits)
+            elif dissonance_type == "D''":
+                dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y_old_probabilities,
+                                                                                     logits=logits)
+            else:
+                raise Exception("invalid dissonance type. The valid input strings are: D, D' and D''")
+
+            if history is None:
+                loss = (1-diss_weight)*log_loss + diss_weight * dissonance
+            else:
+                # likelihood computation
+                means = tf.placeholder(tf.float32, [None, n_features], name='means')
+                vars = tf.placeholder(tf.float32, [None, n_features], name='vars')
+                divisor = tf.math.square(x - means) + vars
+                attribute_probabilities = tf.math.divide(vars, divisor)
+                likelihood = tf.reduce_mean(attribute_probabilities)
+
+                loss = (1 - diss_weight) * log_loss + diss_weight * dissonance * likelihood
 
         # compatibility calculation
         y_new_correct = tf.cast(tf.equal(tf.round(output), y), tf.float32)
@@ -139,10 +147,10 @@ class MLP:
         with tf.Session() as sess:
             sess.run(init_op)
             batches = int(len(X_train) / batch_size)
-            acc = 0
-            com = 0
-            self.accuracy = 0
-            self.compatibility = 0
+            # acc = 0
+            # com = 0
+            # self.accuracy = 0
+            # self.compatibility = 0
 
             if old_model is None:  # without compatibility
                 print("\nTRAINING h1:\ntrain fraction = " + str(int(100 * train_fraction)) + "%\n")
@@ -165,12 +173,12 @@ class MLP:
 
                         # train the model, and then get the accuracy and loss from model
                         sess.run(train_step, feed_dict={x: X_batch, y: Y_batch})
-                        acc, lss, out = sess.run([accuracy, loss, output], feed_dict={x: X_batch, y: Y_batch})
-                        losses = losses + np.sum(lss)
-                        accs = accs + np.sum(acc)
+                        # acc, lss, out = sess.run([accuracy, loss, output], feed_dict={x: X_batch, y: Y_batch})
+                        # losses = losses + np.sum(lss)
+                        # accs = accs + np.sum(acc)
 
                     # test the model
-                    acc, lss, out = sess.run([accuracy, loss, output], feed_dict={x: X_test, y: Y_test})
+                    out = sess.run([output], feed_dict={x: X_test, y: Y_test})
 
                     # preds = tf.round(out).eval()
                     # zeroes = 0
@@ -182,11 +190,10 @@ class MLP:
                     #         ones += 1
                     # print("ones = "+str(ones)+"/"+str(ones+zeroes))
 
-                    self.accuracy = acc
+                    # self.accuracy = acc
                     self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
 
-                    print(str(epoch + 1) + "/" + str(train_epochs) + "\ttrain acc = %.4f" % (accs / batches)
-                          + ", test auc = %.4f" % self.auc)
+                    print(str(epoch + 1) + "/" + str(train_epochs) + "\tauc = %.4f" % self.auc)
 
                 # save weights
                 self.final_W1 = W1.eval()
@@ -213,9 +220,9 @@ class MLP:
 
                 # first = True
                 for epoch in range(train_epochs):
-                    losses = 0
-                    diss_losses = 0
-                    accs = 0
+                    # losses = 0
+                    # diss_losses = 0
+                    # accs = 0
                     for batch in range(batches):
                         # shuffled_indexes = np.random.randint(X_train.shape[0], size=batch_size)
                         # X_batch = X_train[shuffled_indexes]
@@ -234,26 +241,46 @@ class MLP:
                         Y_batch_old_correct = Y_train_old_correct[batch_start:batch_end]
 
                         # train the new model, and then get the accuracy and loss from it
-                        sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
-                                                        y_old_probabilities: Y_batch_old_probabilities,
-                                                        y_old_correct: Y_batch_old_correct})
-                        acc, lss, out, diss = sess.run([accuracy, loss, output, dissonance],
-                                                       feed_dict={x: X_batch, y: Y_batch,
-                                                                  y_old_probabilities: Y_batch_old_probabilities,
-                                                                  y_old_correct: Y_batch_old_correct})
+                        if history is None:
+                            sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
+                                                            y_old_probabilities: Y_batch_old_probabilities,
+                                                            y_old_correct: Y_batch_old_correct})
+                            # acc, lss, out, diss = sess.run([accuracy, loss, output, dissonance],
+                            #                                feed_dict={x: X_batch, y: Y_batch,
+                            #                                           y_old_probabilities: Y_batch_old_probabilities,
+                            #                                           y_old_correct: Y_batch_old_correct})
+                        else:
+                            sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
+                                                            y_old_probabilities: Y_batch_old_probabilities,
+                                                            y_old_correct: Y_batch_old_correct,
+                                                            means: history.means * len(X_batch),
+                                                            vars: history.vars * len(X_batch)})
+                            # acc, lss, out, diss = sess.run([accuracy, loss, output, dissonance],
+                            #                                feed_dict={x: X_batch, y: Y_batch,
+                            #                                           y_old_probabilities: Y_batch_old_probabilities,
+                            #                                           y_old_correct: Y_batch_old_correct,
+                            #                                           means: history.means * len(X_batch),
+                            #                                           vars: history.vars * len(X_batch)})
                         # if losses == 0 and epoch == 0:
                         #     print(diss_type + ": "+str(diss))
 
-                        losses = losses + np.sum(lss)
-                        accs = accs + np.sum(acc)
-                        diss_losses = diss_losses + np.sum(diss)
+                        # losses = losses + np.sum(lss)
+                        # accs = accs + np.sum(acc)
+                        # diss_losses = diss_losses + np.sum(diss)
 
-                    # test the new model
-                    acc, lss, out, com = sess.run([accuracy, loss, output, compatibility],
+                # test the new model
+                if history is None:
+                    out, com = sess.run([output, compatibility],
                                                   feed_dict={x: X_test, y: Y_test,
                                                              y_old_probabilities: Y_test_old_probabilities,
                                                              y_old_correct: Y_test_old_correct})
-
+                else:
+                    out, com = sess.run([output, compatibility],
+                                                  feed_dict={x: X_test, y: Y_test,
+                                                             y_old_probabilities: Y_test_old_probabilities,
+                                                             y_old_correct: Y_test_old_correct,
+                                                             means: history.means * len(X_test),
+                                                             vars: history.vars * len(X_test)})
                     # if first:
                     #     first = False
                     #     print("acc = "+str(acc))
@@ -272,13 +299,8 @@ class MLP:
                     # print(str(epoch + 1) + "/" + str(train_epochs) + "\ttrain acc = %.4f" % (accs / batches)
                     #       + ", test acc = %.4f" % acc + ", com = %.4f" % com)
 
-                    self.output = out
-                    self.accuracy = acc
-                    self.compatibility = com
-
-                    # self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
-
-                self.auc = sklearn.metrics.roc_auc_score(Y_test, self.output)
+                self.compatibility = com
+                self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
                 print("FINISHED:\ttest auc = %.4f" % self.auc + ", compatibility = %.4f" % self.compatibility)
 
             runtime = str(int((round(time.time() * 1000))-start_time)/1000)
@@ -298,6 +320,16 @@ class MLP:
         y2 = tf.sigmoid((tf.matmul(y1, self.final_W2) + self.final_b2)).eval()
         logits = (tf.matmul(y2, self.final_Wo) + self.final_bo).eval()
         return tf.nn.sigmoid(logits, name='activationOutputLayer').eval()
+
+
+class History:
+    """
+    Class that implements the user's history, calulating means and vars.
+    """
+    def __init__(self, instances):
+        self.instances = instances
+        self.means = np.mean(instances, axis=0)
+        self.vars = np.var(instances, axis=0)
 
 
 # ------------------ #
@@ -328,9 +360,9 @@ h1_train_fraction = 0.02
 h2_train_fraction = 0.2
 
 # Dissonance types
-diss_types = ["D", "D'", "D''"]
+# diss_types = ["D", "D'", "D''"]
 # diss_types = ["D", "D''"]
-# diss_types = ["D"]
+diss_types = ["D"]
 
 # Dissonance weights in [0,100] as percentages
 diss_weights = range(11)
@@ -338,7 +370,9 @@ diss_weights = range(11)
 factor = 8  # multiplies the diss by this factor
 repetitions = 1
 
+# ------------------------ #
 # END OF MODIFYING SECTION #
+# ------------------------ #
 
 # get rows and labels
 df = pd.read_csv(dataset_path)
@@ -350,11 +384,15 @@ rows = len(X)
 X = X[:int(rows * dataset_fraction)]
 Y = Y[:int(rows * dataset_fraction)]
 
+# get simulated user history
+user_instances = X[:100].loc[df['ExternalRiskEstimate'] > 75]
+
 # min max scale and binarize the target labels
 scaler = MinMaxScaler()
 X = scaler.fit_transform(X, Y)
 label = LabelBinarizer()
 Y = label.fit_transform(Y)
+user_instances = scaler.transform(user_instances)
 
 # compute base model:
 h1 = MLP(X, Y, h1_train_fraction, 200, 50, 10, 5, 0.02)
@@ -362,6 +400,10 @@ with open(results_path, 'w', newline='') as csv_file:
     writer = csv.writer(csv_file)
     writer.writerow(["compatibility", "h1 auc", "h2 auc (D)", "h2 auc (D')", "h2 auc (D'')",
                      "dissonance weight", "h1 train fraction = " + str(h1_train_fraction), "h2 train fraction = " + str(h2_train_fraction)])
+
+history = History(user_instances)
+ten = history.means*10
+print(ten)
 
 # train compatible models:
 iteration = 0
