@@ -14,10 +14,9 @@ class MLP:
     to be able to produce compatible updates.
     """
 
-    def __init__(self, X, Y, train_fraction, train_epochs, batch_size,
-                 layer_1_neurons, layer_2_neurons, learning_rate, diss_weight=None,
-                 old_model=None, dissonance_type=None, make_h1_subset=True, copy_h1_weights=True,
-                 history=None):
+    def __init__(self, X, Y, train_fraction, train_epochs, batch_size,layer_1_neurons, layer_2_neurons, learning_rate,
+                 diss_weight=None, old_model=None, dissonance_type=None, make_h1_subset=True, copy_h1_weights=True,
+                 history=None, use_history=False):
 
         start_time = int(round(time.time() * 1000))
 
@@ -47,6 +46,11 @@ class MLP:
         X_test = X[self.test_indexes]
         Y_test = Y[self.test_indexes]
 
+        if history is not None:
+            # get likelihood
+            likelihood_train = history.likelihood[self.train_indexes]
+            likelihood_test = history.likelihood[self.test_indexes]
+
         # print("X_train = " + str(X_train))
         # print("Y_train = " + str(Y_train))
         # print("X_test = " + str(X_test))
@@ -62,6 +66,7 @@ class MLP:
         # these placeholders serve as the input tensors
         x = tf.placeholder(tf.float32, [None, n_features], name='input')
         y = tf.placeholder(tf.float32, [None, labels_dim], name='labels')
+        likelihood = tf.placeholder(tf.float32, [None, labels_dim], name='likelihood')
 
         # input tensor for the base model predictions
         y_old_probabilities = tf.placeholder(tf.float32, [None, labels_dim], name='old_probabilities')
@@ -102,10 +107,10 @@ class MLP:
         # model evaluation tensors
         correct_prediction = tf.equal(tf.round(output), y)
         accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name="Accuracy")
-
-        log_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
+        y_new_correct = tf.cast(tf.equal(tf.round(output), y), tf.float32)
 
         # loss computation
+        log_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
         if old_model is None:
             loss = log_loss
         else:
@@ -121,20 +126,15 @@ class MLP:
                 raise Exception("invalid dissonance type. The valid input strings are: D, D' and D''")
 
             if history is None:
-                loss = (1-diss_weight)*log_loss + diss_weight * dissonance
+                loss = (1 - diss_weight) * log_loss + diss_weight * dissonance
+                compatibility = tf.reduce_sum(y_old_correct * y_new_correct) / tf.reduce_sum(y_old_correct)
             else:
-                # likelihood computation
-                means = tf.placeholder(tf.float32, [None, n_features], name='means')
-                vars = tf.placeholder(tf.float32, [None, n_features], name='vars')
-                divisor = tf.math.square(x - means) + vars
-                attribute_probabilities = tf.math.divide(vars, divisor)
-                likelihood = tf.reduce_mean(attribute_probabilities)
-
-                loss = (1 - diss_weight) * log_loss + diss_weight * dissonance * likelihood
-
-        # compatibility calculation
-        y_new_correct = tf.cast(tf.equal(tf.round(output), y), tf.float32)
-        compatibility = tf.reduce_sum(y_old_correct * y_new_correct) / tf.reduce_sum(y_old_correct)
+                if use_history:
+                    loss = (1 - diss_weight) * log_loss + diss_weight * dissonance * likelihood
+                else:
+                    loss = (1 - diss_weight) * log_loss + diss_weight * dissonance
+                compatibility = tf.reduce_sum(y_old_correct * y_new_correct * likelihood) / tf.reduce_sum(
+                    y_old_correct * likelihood)
 
         # prepare training
         train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
@@ -178,7 +178,7 @@ class MLP:
                         # accs = accs + np.sum(acc)
 
                     # test the model
-                    out = sess.run([output], feed_dict={x: X_test, y: Y_test})
+                    acc, lss, out = sess.run([accuracy, loss, output], feed_dict={x: X_test, y: Y_test})
 
                     # preds = tf.round(out).eval()
                     # zeroes = 0
@@ -206,9 +206,15 @@ class MLP:
                 print("test auc = %.4f" % self.auc)
 
             else:  # with compatibility
+
+                if use_history:
+                    history_string = "USE HISTORY"
+                else:
+                    history_string = "IGNORE HISTORY"
+
                 print("\nTRAINING h2 COMPATIBLE WITH h1:\ntrain fraction = " +
                       str(int(100 * train_fraction)) + "%, diss weight = " + str(diss_weight)
-                      + ", diss type = " + str(dissonance_type) + "\n")
+                      + ", diss type = " + str(dissonance_type) + ", " + history_string + "\n")
 
                 # get the old model predictions
                 Y_train_old_probabilities = old_model.predict_probabilities(X_train)
@@ -217,6 +223,15 @@ class MLP:
                 Y_test_old_probabilities = old_model.predict_probabilities(X_test)
                 Y_test_old_labels = tf.round(Y_test_old_probabilities).eval()
                 Y_test_old_correct = tf.cast(tf.equal(Y_test_old_labels, Y_test), tf.float32).eval()
+
+                # if history is not None:
+                #     # get the means and vars from user's history
+                #     means_train = np.tile(history.means, (len(X_train), 1))
+                #     vars_train = np.tile(history.vars, (len(X_train), 1))
+                #     likelihood_train = vars_train / (np.square() + vars_train)
+                #
+                #     means_test = np.tile(history.means, (len(X_test), 1))
+                #     vars_test = np.tile(history.vars, (len(X_test), 1))
 
                 # first = True
                 for epoch in range(train_epochs):
@@ -245,22 +260,35 @@ class MLP:
                             sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
                                                             y_old_probabilities: Y_batch_old_probabilities,
                                                             y_old_correct: Y_batch_old_correct})
-                            # acc, lss, out, diss = sess.run([accuracy, loss, output, dissonance],
-                            #                                feed_dict={x: X_batch, y: Y_batch,
-                            #                                           y_old_probabilities: Y_batch_old_probabilities,
-                            #                                           y_old_correct: Y_batch_old_correct})
                         else:
+                            likelihood_batch = likelihood_train[batch_start:batch_end]
                             sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
                                                             y_old_probabilities: Y_batch_old_probabilities,
                                                             y_old_correct: Y_batch_old_correct,
-                                                            means: history.means * len(X_batch),
-                                                            vars: history.vars * len(X_batch)})
-                            # acc, lss, out, diss = sess.run([accuracy, loss, output, dissonance],
-                            #                                feed_dict={x: X_batch, y: Y_batch,
-                            #                                           y_old_probabilities: Y_batch_old_probabilities,
-                            #                                           y_old_correct: Y_batch_old_correct,
-                            #                                           means: history.means * len(X_batch),
-                            #                                           vars: history.vars * len(X_batch)})
+                                                            likelihood: likelihood_batch})
+
+                        # acc, lss, out, diss = sess.run([accuracy, loss, output, dissonance],
+                        #                                feed_dict={x: X_batch, y: Y_batch,
+                        #                                           y_old_probabilities: Y_batch_old_probabilities,
+                        #                                           y_old_correct: Y_batch_old_correct})
+                        # if batch_end - batch_start == batch_size:
+                        #     means_batch = means_train
+                        #     vars_batch = vars_train
+                        # else:
+                        #     means_batch = means_train[0:batch_end - batch_start]
+                        #     vars_batch = vars_train[0:batch_end - batch_start]
+
+                        # sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
+                        #                                 y_old_probabilities: Y_batch_old_probabilities,
+                        #                                 y_old_correct: Y_batch_old_correct})
+                        # lss, out, diss = sess.run([loss, output, dissonance],
+                        #                                feed_dict={x: X_batch, y: Y_batch,
+                        #                                           y_old_probabilities: Y_batch_old_probabilities,
+                        #                                           y_old_correct: Y_batch_old_correct,
+                        #                                           means: means_batch, vars: vars_batch})
+                        #
+                        # print(str(epoch + 1) + "/" + str(train_epochs) + "\tloss = " % lss)
+
                         # if losses == 0 and epoch == 0:
                         #     print(diss_type + ": "+str(diss))
 
@@ -269,18 +297,25 @@ class MLP:
                         # diss_losses = diss_losses + np.sum(diss)
 
                 # test the new model
+                # if history is None:
                 if history is None:
                     out, com = sess.run([output, compatibility],
-                                                  feed_dict={x: X_test, y: Y_test,
-                                                             y_old_probabilities: Y_test_old_probabilities,
-                                                             y_old_correct: Y_test_old_correct})
+                                        feed_dict={x: X_test, y: Y_test,
+                                                   y_old_probabilities: Y_test_old_probabilities,
+                                                   y_old_correct: Y_test_old_correct})
                 else:
                     out, com = sess.run([output, compatibility],
-                                                  feed_dict={x: X_test, y: Y_test,
-                                                             y_old_probabilities: Y_test_old_probabilities,
-                                                             y_old_correct: Y_test_old_correct,
-                                                             means: history.means * len(X_test),
-                                                             vars: history.vars * len(X_test)})
+                                        feed_dict={x: X_test, y: Y_test,
+                                                   y_old_probabilities: Y_test_old_probabilities,
+                                                   y_old_correct: Y_test_old_correct,
+                                                   likelihood: likelihood_test})
+                # else:
+                #     out, com, mns, vrs, lkh = sess.run([output, compatibility, means, vars, likelihood],
+                #                                   feed_dict={x: X_test, y: Y_test,
+                #                                              y_old_probabilities: Y_test_old_probabilities,
+                #                                              y_old_correct: Y_test_old_correct,
+                #                                              means: means_test, vars: vars_test})
+
                     # if first:
                     #     first = False
                     #     print("acc = "+str(acc))
@@ -326,11 +361,18 @@ class History:
     """
     Class that implements the user's history, calulating means and vars.
     """
-    def __init__(self, instances):
+    def __init__(self, instances, width_factor, epsilon):
         self.instances = instances
         self.means = np.mean(instances, axis=0)
-        self.vars = np.var(instances, axis=0)
+        self.vars = np.var(instances, axis=0) * width_factor + epsilon
+        self.likelihood = None
 
+    def set_likelihood(self, x):
+        diff = np.subtract(x, self.means)
+        sqr_diff = np.power(diff, 2)
+        div = np.add(sqr_diff, self.vars)
+        self.likelihood = np.mean(np.divide(self.vars, div), axis=1)
+        self.likelihood = np.reshape(self.likelihood, (len(x), 1))
 
 # ------------------ #
 # todo: MODIFY THESE #
@@ -365,9 +407,9 @@ h2_train_fraction = 0.2
 diss_types = ["D"]
 
 # Dissonance weights in [0,100] as percentages
-diss_weights = range(11)
+diss_weights = range(6)
 # diss_weights = [0]
-factor = 8  # multiplies the diss by this factor
+factor = 16  # multiplies the diss by this factor
 repetitions = 1
 
 # ------------------------ #
@@ -384,7 +426,9 @@ rows = len(X)
 X = X[:int(rows * dataset_fraction)]
 Y = Y[:int(rows * dataset_fraction)]
 
-# get simulated user history
+# ---------------------------- #
+# todo: MODIFY USER SIMULATION #
+# ---------------------------- #
 user_instances = X[:100].loc[df['ExternalRiskEstimate'] > 75]
 
 # min max scale and binarize the target labels
@@ -392,36 +436,40 @@ scaler = MinMaxScaler()
 X = scaler.fit_transform(X, Y)
 label = LabelBinarizer()
 Y = label.fit_transform(Y)
-user_instances = scaler.transform(user_instances)
+
+# get likelihood of dataset
+history = History(scaler.transform(user_instances), 1, 0.0000001)
+history.set_likelihood(X)
 
 # compute base model:
 h1 = MLP(X, Y, h1_train_fraction, 200, 50, 10, 5, 0.02)
 with open(results_path, 'w', newline='') as csv_file:
     writer = csv.writer(csv_file)
-    writer.writerow(["compatibility", "h1 auc", "h2 auc (D)", "h2 auc (D')", "h2 auc (D'')",
-                     "dissonance weight", "h1 train fraction = " + str(h1_train_fraction), "h2 train fraction = " + str(h2_train_fraction)])
-
-history = History(user_instances)
-ten = history.means*10
-print(ten)
+    row = ["compatibility", "h1 auc"]
+    for diss_type in diss_types:
+        row += ["h2 auc ("+diss_type+") WITHOUT history"]
+        row += ["h2 auc ("+diss_type+") WITH history"]
+    writer.writerow(row + ["dissonance weight", "h1 train fraction = " + str(h1_train_fraction),
+                           "h2 train fraction = " + str(h2_train_fraction)])
 
 # train compatible models:
 iteration = 0
 for i in diss_weights:
     for j in range(repetitions):
         offset = 0
-        for diss_type in diss_types:
-            iteration += 1
-            print("-------\n"+str(iteration)+"/"+str(len(diss_weights) * repetitions * len(diss_types))+"\n-------")
-            diss_weight = factor * i / 100.0
-            tf.reset_default_graph()
-            h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True, True)
-            with open(results_path, 'a', newline='') as csv_file:
-                writer = csv.writer(csv_file)
-                row = [str(h2.compatibility), str(h1.auc)]
-                for k in diss_types:
-                    row += [""]
-                row += [str(diss_weight)]
-                row[2 + offset] = str(h2.auc)
-                writer.writerow(row)
-            offset += 1
+        for use_history in [False, True]:
+            for diss_type in diss_types:
+                iteration += 1
+                print("-------\n"+str(iteration)+"/"+str(len(diss_weights) * repetitions * len(diss_types) * 2)+"\n-------")
+                diss_weight = factor * i / 100.0
+                tf.reset_default_graph()
+                h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True, True, history, use_history)
+                with open(results_path, 'a', newline='') as csv_file:
+                    writer = csv.writer(csv_file)
+                    row = [str(h2.compatibility), str(h1.auc)]
+                    for k in diss_types*2:
+                        row += [""]
+                    row += [str(diss_weight)]
+                    row[2 + offset] = str(h2.auc)
+                    writer.writerow(row)
+                offset += 1
