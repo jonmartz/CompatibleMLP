@@ -6,6 +6,10 @@ import sklearn.metrics
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.preprocessing import LabelBinarizer
 import time
+import matplotlib.pyplot as plt
+import os, os.path
+
+import math
 
 
 class MLP:
@@ -50,11 +54,6 @@ class MLP:
             # get likelihood
             likelihood_train = history.likelihood[self.train_indexes]
             likelihood_test = history.likelihood[self.test_indexes]
-
-        # print("X_train = " + str(X_train))
-        # print("Y_train = " + str(Y_train))
-        # print("X_test = " + str(X_test))
-        # print("Y_test = " + str(Y_test))
 
         # ------------ #
         # CREATE MODEL #
@@ -111,10 +110,11 @@ class MLP:
 
         # loss computation
         log_loss = tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
+
+        # dissonance computation
         if old_model is None:
             loss = log_loss
         else:
-            # dissonance computation
             if dissonance_type == "D":
                 dissonance = y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=y, logits=logits)
             elif dissonance_type == "D'":
@@ -125,19 +125,31 @@ class MLP:
             else:
                 raise Exception("invalid dissonance type. The valid input strings are: D, D' and D''")
 
+            # todo: history utilization
             if history is None:
+                print("no history")
                 loss = (1 - diss_weight) * log_loss + diss_weight * dissonance
+                # loss = (2 - diss_weight) * log_loss + diss_weight * dissonance
+                # loss = log_loss + diss_weight * dissonance
+
                 compatibility = tf.reduce_sum(y_old_correct * y_new_correct) / tf.reduce_sum(y_old_correct)
             else:
-                if use_history:
-                    loss = (1 - diss_weight) * log_loss + diss_weight * dissonance * likelihood
-                else:
+                if not use_history:
                     loss = (1 - diss_weight) * log_loss + diss_weight * dissonance
-                compatibility = tf.reduce_sum(y_old_correct * y_new_correct * likelihood) / tf.reduce_sum(
-                    y_old_correct * likelihood)
+                    # loss = (2 - diss_weight) * log_loss + diss_weight * dissonance
+                    # loss = log_loss + diss_weight * dissonance
+                else:
+                    loss = (1 - diss_weight) * log_loss + diss_weight * dissonance * likelihood
+                    # loss = (2 - diss_weight) * log_loss + diss_weight * dissonance * likelihood
+                    # loss = log_loss + diss_weight * dissonance * likelihood
+
+                compatibility = tf.reduce_sum(y_old_correct * y_new_correct * likelihood) / tf.reduce_sum(y_old_correct * likelihood)
+        # todo: uncomment
+        loss = loss/batch_size
 
         # prepare training
-        train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
+        # train_step = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss)
+        train_step = tf.train.AdamOptimizer().minimize(loss)
         init_op = tf.global_variables_initializer()
 
         # ----------- #
@@ -147,10 +159,6 @@ class MLP:
         with tf.Session() as sess:
             sess.run(init_op)
             batches = int(len(X_train) / batch_size)
-            # acc = 0
-            # com = 0
-            # self.accuracy = 0
-            # self.compatibility = 0
 
             if old_model is None:  # without compatibility
                 print("\nTRAINING h1:\ntrain fraction = " + str(int(100 * train_fraction)) + "%\n")
@@ -179,21 +187,9 @@ class MLP:
 
                     # test the model
                     acc, lss, out = sess.run([accuracy, loss, output], feed_dict={x: X_test, y: Y_test})
-
-                    # preds = tf.round(out).eval()
-                    # zeroes = 0
-                    # ones = 0
-                    # for pred in preds:
-                    #     if pred == 0.0:
-                    #         zeroes += 1
-                    #     else:
-                    #         ones += 1
-                    # print("ones = "+str(ones)+"/"+str(ones+zeroes))
-
-                    # self.accuracy = acc
                     self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
 
-                    print(str(epoch + 1) + "/" + str(train_epochs) + "\tauc = %.4f" % self.auc)
+                    # print(str(epoch + 1) + "/" + str(train_epochs) + "\tauc = %.4f" % self.auc)
 
                 # save weights
                 self.final_W1 = W1.eval()
@@ -224,20 +220,7 @@ class MLP:
                 Y_test_old_labels = tf.round(Y_test_old_probabilities).eval()
                 Y_test_old_correct = tf.cast(tf.equal(Y_test_old_labels, Y_test), tf.float32).eval()
 
-                # if history is not None:
-                #     # get the means and vars from user's history
-                #     means_train = np.tile(history.means, (len(X_train), 1))
-                #     vars_train = np.tile(history.vars, (len(X_train), 1))
-                #     likelihood_train = vars_train / (np.square() + vars_train)
-                #
-                #     means_test = np.tile(history.means, (len(X_test), 1))
-                #     vars_test = np.tile(history.vars, (len(X_test), 1))
-
-                # first = True
                 for epoch in range(train_epochs):
-                    # losses = 0
-                    # diss_losses = 0
-                    # accs = 0
                     for batch in range(batches):
                         # shuffled_indexes = np.random.randint(X_train.shape[0], size=batch_size)
                         # X_batch = X_train[shuffled_indexes]
@@ -266,77 +249,24 @@ class MLP:
                                                             y_old_probabilities: Y_batch_old_probabilities,
                                                             y_old_correct: Y_batch_old_correct,
                                                             likelihood: likelihood_batch})
-
-                        # acc, lss, out, diss = sess.run([accuracy, loss, output, dissonance],
-                        #                                feed_dict={x: X_batch, y: Y_batch,
-                        #                                           y_old_probabilities: Y_batch_old_probabilities,
-                        #                                           y_old_correct: Y_batch_old_correct})
-                        # if batch_end - batch_start == batch_size:
-                        #     means_batch = means_train
-                        #     vars_batch = vars_train
-                        # else:
-                        #     means_batch = means_train[0:batch_end - batch_start]
-                        #     vars_batch = vars_train[0:batch_end - batch_start]
-
-                        # sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
-                        #                                 y_old_probabilities: Y_batch_old_probabilities,
-                        #                                 y_old_correct: Y_batch_old_correct})
-                        # lss, out, diss = sess.run([loss, output, dissonance],
-                        #                                feed_dict={x: X_batch, y: Y_batch,
-                        #                                           y_old_probabilities: Y_batch_old_probabilities,
-                        #                                           y_old_correct: Y_batch_old_correct,
-                        #                                           means: means_batch, vars: vars_batch})
-                        #
-                        # print(str(epoch + 1) + "/" + str(train_epochs) + "\tloss = " % lss)
-
-                        # if losses == 0 and epoch == 0:
-                        #     print(diss_type + ": "+str(diss))
-
-                        # losses = losses + np.sum(lss)
-                        # accs = accs + np.sum(acc)
-                        # diss_losses = diss_losses + np.sum(diss)
-
                 # test the new model
-                # if history is None:
                 if history is None:
                     out, com = sess.run([output, compatibility],
                                         feed_dict={x: X_test, y: Y_test,
                                                    y_old_probabilities: Y_test_old_probabilities,
                                                    y_old_correct: Y_test_old_correct})
                 else:
-                    out, com = sess.run([output, compatibility],
+                    out, com, log_lss, diss = sess.run([output, compatibility, log_loss, dissonance],
                                         feed_dict={x: X_test, y: Y_test,
                                                    y_old_probabilities: Y_test_old_probabilities,
                                                    y_old_correct: Y_test_old_correct,
                                                    likelihood: likelihood_test})
-                # else:
-                #     out, com, mns, vrs, lkh = sess.run([output, compatibility, means, vars, likelihood],
-                #                                   feed_dict={x: X_test, y: Y_test,
-                #                                              y_old_probabilities: Y_test_old_probabilities,
-                #                                              y_old_correct: Y_test_old_correct,
-                #                                              means: means_test, vars: vars_test})
-
-                    # if first:
-                    #     first = False
-                    #     print("acc = "+str(acc))
-                    #
-                    # preds = tf.round(out).eval()
-                    # zeroes = 0
-                    # ones = 0
-                    # for pred in preds:
-                    #     if pred == 0.0:
-                    #         zeroes += 1
-                    #     else:
-                    #         ones += 1
-                    # if ones > 0:
-                    #     print("ones = " + str(ones) + ", epoch = " + str(epoch) + ", acc = "+str(acc))
-
-                    # print(str(epoch + 1) + "/" + str(train_epochs) + "\ttrain acc = %.4f" % (accs / batches)
-                    #       + ", test acc = %.4f" % acc + ", com = %.4f" % com)
 
                 self.compatibility = com
                 self.auc = sklearn.metrics.roc_auc_score(Y_test, out)
                 print("FINISHED:\ttest auc = %.4f" % self.auc + ", compatibility = %.4f" % self.compatibility)
+                # print("log loss = "+str(np.sum(log_lss)))
+                # print("dissonance = "+str(np.sum(diss)))
 
             runtime = str(int((round(time.time() * 1000))-start_time)/1000)
             print("runtime = " + str(runtime) + " secs\n")
@@ -359,7 +289,7 @@ class MLP:
 
 class History:
     """
-    Class that implements the user's history, calulating means and vars.
+    Class that implements the user's history, calculating means and vars.
     """
     def __init__(self, instances, width_factor, epsilon):
         self.instances = instances
@@ -367,11 +297,30 @@ class History:
         self.vars = np.var(instances, axis=0) * width_factor + epsilon
         self.likelihood = None
 
-    def set_likelihood(self, x):
+    def set_simple_likelihood(self, x):
+        # compute likelihood for each attribute
         diff = np.subtract(x, self.means)
         sqr_diff = np.power(diff, 2)
         div = np.add(sqr_diff, self.vars)
-        self.likelihood = np.mean(np.divide(self.vars, div), axis=1)
+        attribute_likelihoods = np.divide(self.vars, div)
+
+        # todo: experimenting with likelihood here
+        # merge the likelihood of all attributes
+        self.likelihood = np.mean(attribute_likelihoods, axis=1)
+        # self.likelihood = np.round(self.likelihood)
+        # self.likelihood = 1 + self.likelihood
+        self.likelihood = np.reshape(self.likelihood, (len(x), 1))
+
+    def set_norm_dist_likelihood(self, x):
+        # compute likelihood for each attribute
+        sqr_diff = np.power(np.subtract(x, self.means), 2)
+        power = np.divide(sqr_diff, 2 * self.vars)
+        exp = np.exp(power)
+        sqrt = np.sqrt(2*np.pi*self.vars)
+        attribute_likelihoods = np.divide(1, sqrt * exp)
+
+        # merge the likelihood of all attributes
+        self.likelihood = np.product(attribute_likelihoods, axis=1)
         self.likelihood = np.reshape(self.likelihood, (len(x), 1))
 
 # ------------------ #
@@ -395,6 +344,10 @@ target_col = 'RiskPerformance'
 # results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\fraudDetection.csv"
 # target_col = 'isFraud'
 
+# dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_without_user_id.csv'
+# results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\e-learning.csv"
+# target_col = 'correct'
+
 # Data fractions
 dataset_fraction = 0.5
 # dataset_fraction = 0.2
@@ -407,9 +360,9 @@ h2_train_fraction = 0.2
 diss_types = ["D"]
 
 # Dissonance weights in [0,100] as percentages
-diss_weights = range(6)
+diss_weights = range(11)
 # diss_weights = [0]
-factor = 16  # multiplies the diss by this factor
+factor = 9  # multiplies the diss by this factor
 repetitions = 1
 
 # ------------------------ #
@@ -429,7 +382,14 @@ Y = Y[:int(rows * dataset_fraction)]
 # ---------------------------- #
 # todo: MODIFY USER SIMULATION #
 # ---------------------------- #
+
+# creditRiskAssessment
 user_instances = X[:100].loc[df['ExternalRiskEstimate'] > 75]
+
+# # e-learning
+# user_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_user_77912.csv'
+# user_instances = pd.read_csv(user_path)
+# user_instances.pop(target_col)
 
 # min max scale and binarize the target labels
 scaler = MinMaxScaler()
@@ -438,8 +398,9 @@ label = LabelBinarizer()
 Y = label.fit_transform(Y)
 
 # get likelihood of dataset
-history = History(scaler.transform(user_instances), 1, 0.0000001)
-history.set_likelihood(X)
+history = History(scaler.transform(user_instances), 0.1, 0.0000001)
+history.set_simple_likelihood(X)
+# history.set_norm_dist_likelihood(X)
 
 # compute base model:
 h1 = MLP(X, Y, h1_train_fraction, 200, 50, 10, 5, 0.02)
@@ -454,6 +415,10 @@ with open(results_path, 'w', newline='') as csv_file:
 
 # train compatible models:
 iteration = 0
+h2_without_history_x = []
+h2_without_history_y = []
+h2_with_history_x = []
+h2_with_history_y = []
 for i in diss_weights:
     for j in range(repetitions):
         offset = 0
@@ -462,8 +427,9 @@ for i in diss_weights:
                 iteration += 1
                 print("-------\n"+str(iteration)+"/"+str(len(diss_weights) * repetitions * len(diss_types) * 2)+"\n-------")
                 diss_weight = factor * i / 100.0
+                # diss_weight = factor * i
                 tf.reset_default_graph()
-                h2 = MLP(X, Y, h2_train_fraction, 200, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True, True, history, use_history)
+                h2 = MLP(X, Y, h2_train_fraction, 400, 50, 10, 5, 0.02, diss_weight, h1, diss_type, True, True, history, use_history)
                 with open(results_path, 'a', newline='') as csv_file:
                     writer = csv.writer(csv_file)
                     row = [str(h2.compatibility), str(h1.auc)]
@@ -472,4 +438,34 @@ for i in diss_weights:
                     row += [str(diss_weight)]
                     row[2 + offset] = str(h2.auc)
                     writer.writerow(row)
+
+                    # for plot
+                    if not use_history:
+                        h2_x = h2_without_history_x
+                        h2_y = h2_without_history_y
+                    else:
+                        h2_x = h2_with_history_x
+                        h2_y = h2_with_history_y
+                    h2_x += [h2.compatibility]
+                    h2_y += [h2.auc]
                 offset += 1
+
+# plot
+h1_x = [min(min(h2_without_history_x), min(h2_with_history_x)),
+        max(max(h2_without_history_x), max(h2_with_history_x))]
+h1_y = [h1.auc, h1.auc]
+plt.plot(h1_x, h1_y, 'k--', label='h1')
+plt.plot(h2_without_history_x, h2_without_history_y, 'bs', label='h2 without history')
+plt.plot(h2_with_history_x, h2_with_history_y, 'r^', label='h2 with history')
+plt.xlabel('compatibility')
+plt.ylabel('AUC')
+plt.legend(('h1', 'h2 without history', 'h2 with history'),
+           loc='center left')
+plt.title('Trade-off')
+
+# save plot
+plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots'
+plot_count = len(os.listdir(plots_dir))
+plt.savefig(plots_dir + '\\' + str(plot_count + 1) + '.png')
+
+plt.show()
