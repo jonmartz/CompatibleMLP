@@ -91,11 +91,11 @@ class MLP:
         y_old_probabilities = tf.placeholder(tf.float32, [None, labels_dim], name='old_probabilities')
         y_old_correct = tf.placeholder(tf.float32, [None, labels_dim], name='old_corrects')
 
-        # for non-parametric
-        kernels = tf.placeholder(tf.float32, [None, labels_dim], name='hist_kernels')
-        hist_y = tf.placeholder(tf.float32, [None, labels_dim], name='hist_labels')
-        hist_y_old_logits = tf.placeholder(tf.float32, [None, labels_dim], name='hist_old_logits')
-        hist_y_old_correct = tf.placeholder(tf.float32, [None, labels_dim], name='hist_old_corrects')
+        if non_parametric:
+            kernels = tf.placeholder(tf.float32, [None, len(history.instances)], name='hist_kernels')
+            hist_y = tf.placeholder(tf.float32, [None, labels_dim], name='hist_labels')
+            hist_y_old_logits = tf.placeholder(tf.float32, [None, labels_dim], name='hist_old_logits')
+            hist_y_old_correct = tf.placeholder(tf.float32, [None, labels_dim], name='hist_old_corrects')
 
         # set initial weights
         if old_model is None or not copy_h1_weights:
@@ -173,8 +173,12 @@ class MLP:
                         # loss = log_loss + diss_weight * kernel_likelihood * dissonance
                     else:
                         loss = log_loss + diss_weight * dissonance * likelihood
-
-                compatibility = tf.reduce_sum(y_old_correct * y_new_correct * likelihood) / tf.reduce_sum(y_old_correct * likelihood)
+                if non_parametric:
+                    # todo: maybe use average?
+                    compatibility = tf.reduce_sum(y_old_correct * y_new_correct * tf.reduce_sum(kernels, axis=1)) / tf.reduce_sum(
+                        y_old_correct * tf.reduce_sum(kernels, axis=1))
+                else:
+                    compatibility = tf.reduce_sum(y_old_correct * y_new_correct * likelihood) / tf.reduce_sum(y_old_correct * likelihood)
         loss = loss/batch_size
 
         # prepare training
@@ -291,6 +295,7 @@ class MLP:
                                 sess.run(train_step, feed_dict={x: X_batch, y: Y_batch,
                                                                 y_old_probabilities: Y_batch_old_probabilities,
                                                                 y_old_correct: Y_batch_old_correct,
+                                                                hist_y: history.labels,
                                                                 hist_y_old_logits: hist_Y_old_logits,
                                                                 hist_y_old_correct: hist_Y_old_correct,
                                                                 kernels: kernels_batch})
@@ -308,11 +313,12 @@ class MLP:
                                                    y_old_correct: Y_test_old_correct})
                 else:
                     if non_parametric:
-                        out, com, log_lss, diss, new_correct = sess.run(
-                            [output, compatibility, log_loss, hist_dissonance, y_new_correct],
+                        out, com, log_lss, new_correct = sess.run(
+                            [output, compatibility, log_loss, y_new_correct],
                             feed_dict={x: X_test, y: Y_test,
                                        y_old_probabilities: Y_test_old_probabilities,
                                        y_old_correct: Y_test_old_correct,
+                                       hist_y: history.labels,
                                        hist_y_old_logits: hist_Y_old_logits,
                                        hist_y_old_correct: hist_Y_old_correct,
                                        kernels: kernels_test})
@@ -415,16 +421,16 @@ class History:
         self.likelihood = np.product(attribute_likelihoods, axis=1)
         self.likelihood = np.reshape(self.likelihood, (len(df), 1))
 
-    def set_cheat_likelihood(self, x):
+    def set_cheat_likelihood(self, df):
         self.likelihood = []
-        for index, row in x.iterrows():
+        for index, row in df.iterrows():
             if row['ExternalRiskEstimate'] > 75:
                 self.likelihood += [1]
             else:
                 self.likelihood += [0]
-        self.likelihood = np.reshape(self.likelihood, (len(x), 1))
+        self.likelihood = np.reshape(self.likelihood, (len(df), 1))
 
-    def set_non_parametric_likelihood(self, df, sigma):
+    def set_kernels(self, df, sigma):
         distances = []
         for instance in df:
             entry = []
@@ -553,7 +559,7 @@ for user_id, user_instances in users:
     # todo: if not using cheat likelihood, set train similar to history FALSE!
     history.set_cheat_likelihood(X_original)
     # history.set_simple_likelihood(X)
-    # history.set_non_parametric_likelihood(X, 0.5)
+    history.set_kernels(X, 0.5)
 
     # history_test = History(scaler.transform(user_instances), 0.1, 0.0000001)
     # history_test.set_cheat_likelihood(history_test_x_original)
@@ -631,8 +637,10 @@ for user_id, user_instances in users:
                                 diss_weight = factor * i / 100.0
                                 # diss_weight = factor * i
                                 tf.reset_default_graph()
+
                                 h2 = MLP(X, Y, h2_train_fraction, h2_epochs, 50, 10, 5,
-                                         0.02, diss_weight, h1, diss_type, True, True, history, use_history)
+                                         0.02, diss_weight, h1, diss_type, True, True, history, use_history,
+                                         non_parametric=use_history)
 
                                 # result_on_history = h2.test(history_test_x, history_test_y, h1, history_test)
                                 # result_on_history = h2.test(X, Y, h1, history)
