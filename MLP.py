@@ -482,6 +482,9 @@ Y = Y[:int(rows * dataset_fraction)]
 # history_test_x = X[100:].loc[df['ExternalRiskEstimate'] > 75]
 # history_test_y = Y[100:].loc[df['ExternalRiskEstimate'] > 75]
 
+# # creditRiskAssessment
+# users = {'1': X[:100].loc[df['ExternalRiskEstimate'] > 75]}.items()
+
 # # e-learning:
 #
 # # # single user
@@ -546,8 +549,10 @@ for user_id, user_instances in users:
     # get likelihood of dataset
     hist_labels = user_instances.pop(target_col)
     history = History(scaler.transform(user_instances), label.transform(hist_labels), 0.1, 0.0000001)
-    # history.set_cheat_likelihood(X_original)
-    history.set_simple_likelihood(X)
+
+    # todo: if not using cheat likelihood, set train similar to history FALSE!
+    history.set_cheat_likelihood(X_original)
+    # history.set_simple_likelihood(X)
     # history.set_non_parametric_likelihood(X, 0.5)
 
     # history_test = History(scaler.transform(user_instances), 0.1, 0.0000001)
