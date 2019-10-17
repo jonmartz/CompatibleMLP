@@ -29,16 +29,16 @@ class MLP:
 
         # shuffle indexes to cover train and test sets
         if old_model is None or not make_h1_subset:
-            shuffled_indexes = np.random.randint(len(X), size=len(X))
-            train_stop = int(len(X) * train_fraction)
-            self.train_indexes = shuffled_indexes[:train_stop]
-            self.test_indexes = shuffled_indexes[train_stop:]
+            # shuffled_indexes = np.random.randint(len(X), size=len(X))
+            # train_stop = int(len(X) * train_fraction)
+            # self.train_indexes = shuffled_indexes[:train_stop]
+            # self.test_indexes = shuffled_indexes[train_stop:]
 
-            # # todo: trying to eliminate randomness here
-            # indexes = range(len(X))
-            # train_size = int(len(X) * train_fraction)
-            # self.train_indexes = indexes[train_start*train_size:(train_start+1)*train_size]
-            #
+            # todo: trying to eliminate randomness here
+            indexes = range(len(X))
+            train_size = int(len(X) * train_fraction)
+            self.train_indexes = indexes[train_start*train_size:(train_start+1)*train_size]
+
             # if make_train_similar_to_history:
             #     similar_indexes = []
             #     for index in self.train_indexes:
@@ -46,8 +46,8 @@ class MLP:
             #         if history.likelihood[index] == 1:
             #             similar_indexes += [index]
             #     self.train_indexes = similar_indexes
-            #
-            # self.test_indexes = [x for x in indexes if x not in self.train_indexes]
+
+            self.test_indexes = [x for x in indexes if x not in self.train_indexes]
 
         else:  # make the old train set to be a subset of the new train set
             # shuffled = np.random.randint(len(old_model.test_indexes), size=len(old_model.test_indexes))
@@ -177,19 +177,19 @@ class MLP:
                         # denominator = tf.reduce_sum(kernels, axis=1)
                         # kernel_likelihood = numerator / denominator
 
-                        # # # L1:
-                        # kernel_likelihood = tf.reduce_sum(kernels * hist_dissonance) / tf.reduce_sum(kernels)
+                        # L1:
+                        kernel_likelihood = tf.reduce_sum(kernels * hist_dissonance) / tf.reduce_sum(kernels)
 
-                        # L2:
-                        # shape = tf.shape(kernels)
-                        kernel_likelihood = tf.reduce_sum(kernels, axis=1) / len(history.instances)
+                        # # L2:
+                        # # shape = tf.shape(kernels)
+                        # kernel_likelihood = tf.reduce_sum(kernels, axis=1) / len(history.instances)
 
                         # todo: try with and without normal dissonance
-                        # # L1:
-                        # loss = log_loss + diss_weight * kernel_likelihood
+                        # L1:
+                        loss = log_loss + diss_weight * kernel_likelihood
 
-                        # L2:
-                        loss = log_loss + diss_weight * kernel_likelihood * dissonance
+                        # # L2:
+                        # loss = log_loss + diss_weight * kernel_likelihood * dissonance
                     else:
                         loss = log_loss + diss_weight * dissonance * likelihood
 
@@ -433,12 +433,12 @@ class History:
         self.likelihood = None
         self.kernels = None
 
-    def set_simple_likelihood(self, df):
+    def set_simple_likelihood(self, df, magnitude_multiplier=1):
         # compute likelihood for each attribute
         diff = np.subtract(df, self.means)
         sqr_diff = np.power(diff, 2)
         div = np.add(sqr_diff, self.vars)
-        attribute_likelihoods = np.divide(self.vars, div)
+        attribute_likelihoods = np.divide(self.vars, div) * magnitude_multiplier
 
         # todo: experimenting with likelihood here
         # merge the likelihood of all attributes
@@ -459,16 +459,19 @@ class History:
         self.likelihood = np.product(attribute_likelihoods, axis=1)
         self.likelihood = np.reshape(self.likelihood, (len(df), 1))
 
-    def set_cheat_likelihood(self, df):
+    def set_cheat_likelihood(self, df, threshold, likely_val=1):
+        """
+        Works only with credit risk data-set
+        """
         self.likelihood = []
         for index, row in df.iterrows():
-            if row['ExternalRiskEstimate'] > 75:
-                self.likelihood += [1]
+            if row['ExternalRiskEstimate'] > threshold:
+                self.likelihood += [likely_val]
             else:
                 self.likelihood += [0]
         self.likelihood = np.reshape(self.likelihood, (len(df), 1))
 
-    def set_kernels(self, df, sigma=1):
+    def set_kernels(self, df, sigma=1, magnitude_multiplier=1):
         distances = []
         for instance in df:
             entry = []
@@ -476,7 +479,7 @@ class History:
                 entry += [np.linalg.norm(instance - hist_instance)]
             distances += [entry]
         distances = np.asanyarray(distances)
-        self.kernels = 1/(sigma*np.sqrt(2*np.pi))*np.exp(-1/2*np.square(distances/sigma))
+        self.kernels = 1/(sigma*np.sqrt(2*np.pi))*np.exp(-1/2*np.square(distances/sigma))*magnitude_multiplier
 
 # Data-set paths
 
@@ -501,11 +504,14 @@ dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\
 # dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_with_user_id.csv'
 results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\e-learning.csv"
 target_col = 'correct'
-dataset_fraction = 0.03
+# dataset_fraction = 0.01
+dataset_fraction = 1.0
 
 # pre-process data
 df = pd.read_csv(dataset_path)
 df = df[:int(len(df.index) * dataset_fraction)]
+
+# one hot encoding
 categ_cols = ['tutor_mode', 'answer_type', 'type', 'school_id']
 ohe = ce.OneHotEncoder(cols=categ_cols, use_cat_names=True)
 df = ohe.fit_transform(df)
@@ -513,13 +519,12 @@ df = ohe.fit_transform(df)
 # ---------------------------- #
 # todo: MODIFY USER SIMULATION #
 # ---------------------------- #
+
 # # creditRiskAssessment
-# users = {'1': df[:100].loc[df['ExternalRiskEstimate'] > 75]}.items()
+# threshold = 75
+# users = {'1': df[:100].loc[df['ExternalRiskEstimate'] > threshold]}.items()
 
 # e-learning:
-# users_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_with_user_id.csv'
-# users_df = pd.read_csv(users_path)
-# users_df = users_df[:int(len(users_df) * dataset_fraction)]
 users = df.copy().groupby(['user_id'])
 del df['user_id']
 
@@ -554,18 +559,20 @@ got_without_history = False
 # todo: MODIFY THESE #
 # ------------------ #
 
-# non_parametric = False
-non_parametric = True
-#
+non_parametric = False
+# non_parametric = True
+
 # Data fractions
-h1_train_fraction = 0.02
-h2_train_fraction = 0.2
+# h1_train_fraction = 0.02
+# h2_train_fraction = 0.2
+h1_train_fraction = 0.0007
+h2_train_fraction = 0.017
 
 # Dissonance types
 # diss_types = ["D", "D'", "D''"]
 diss_types = ["D"]
 
-# Dissonance weights in [0,100] as percentages
+# Dissonance weights
 diss_weights = range(6)
 factor = 60
 repetitions = 1
@@ -574,16 +581,15 @@ repetitions = 1
 # train_starts = range(21)
 train_starts = [2]
 h1_epochs_set = [1000]
-# h2_epochs_set = [100, 150, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000]
 h2_epochs_set = [300]
 
-user_max_count = 10
+# user_max_count = 10
+user_max_count = -1
 
 h1 = MLP(X, Y, h1_train_fraction, 1000, 50, 10, 5, 0.02)
 
 user_count = 0
 for user_id, user_instances in users:
-# for user_id, user_instances in users.items():
     if len(user_instances) < 5:
         continue
     user_count += 1
@@ -602,16 +608,16 @@ for user_id, user_instances in users:
     # history_test_x = scaler.fit_transform(history_test_x, history_test_y)
     # history_test_y = label.fit_transform(history_test_y)
 
-    # get likelihood of dataset
+    # get likelihood of data-set
     hist_labels = user_instances.pop(target_col)
-    history = History(scaler.transform(user_instances), label.transform(hist_labels))
+    history = History(scaler.transform(user_instances), label.transform(hist_labels), 0.01)
 
     # todo: if not using cheat likelihood, set train similar to history FALSE!
-    # history.set_cheat_likelihood(X_original)
-    history.set_simple_likelihood(X)
-    history.set_kernels(X, 0.5)
+    # history.set_cheat_likelihood(X_original, threshold)
+    # history.set_simple_likelihood(X, 5)
+    # history.set_kernels(X, magnitude_multiplier=10)
 
-    history_test = History(scaler.transform(user_instances))
+    # history_test = History(scaler.transform(user_instances))
 
     # todo: choose only one
     # history_test.set_cheat_likelihood(history_test_x_original)
@@ -632,8 +638,9 @@ for user_id, user_instances in users:
     for train_start in train_starts:
         for h1_epochs in h1_epochs_set:
             for j in range(repetitions):
-                # h1 = MLP(X, Y, h1_train_fraction, h1_epochs, 50, 10, 5, 0.02,
-                #          train_start=train_start, initial_stdev=1, history=history, make_train_similar_to_history=False)
+
+                h1 = MLP(X, Y, h1_train_fraction, h1_epochs, 50, 10, 5, 0.02,
+                         train_start=train_start, initial_stdev=1, history=history)
 
                 # with open(results_path, 'w', newline='') as csv_file:
                 #     writer = csv.writer(csv_file)
@@ -661,7 +668,6 @@ for user_id, user_instances in users:
                     h2_on_history_with_history_y = []
 
                     for i in diss_weights:
-
                         offset = 0
                         for use_history in [False, True]:
                             for diss_type in diss_types:
@@ -756,8 +762,8 @@ for user_id, user_instances in users:
                     # plt.legend(('h1', 'h2 without history', 'h2 with history',
                     #             'h2 on hist without history', 'h2 on hist with history'), loc='center left')
 
-                    plt.title('User ' + str(user_id)+', '+str(len(history.instances))+' instances')
-                    # plt.title('Train set ' + str(train_start)+', size='+str(len(h1.train_indexes)))
+                    # plt.title('User ' + str(user_id)+', '+str(len(history.instances))+' instances')
+                    plt.title('Train set ' + str(train_start)+', size='+str(len(h1.train_indexes)))
                     # plt.title('train '+str(train_start)+' h1 ' + str(h1_epochs) + ' h2 ' + str(h2_epochs))
 
                     # save plot
@@ -765,9 +771,9 @@ for user_id, user_instances in users:
                     plot_count = len(os.listdir(plots_dir))
 
                     # plt.savefig(plots_dir + '\\' + str(plot_count + 1) + '_user_' + str(user_id) + '.png')
-                    plt.savefig(plots_dir + '\\user_' + str(user_id) + '.png')
+                    # plt.savefig(plots_dir + '\\user_' + str(user_id) + '.png')
 
-                    # plt.savefig(plots_dir + '\\' + str(plot_count + 1) + '_train_start_' + str(train_start) + '.png')
+                    plt.savefig(plots_dir + '\\train_set_' + str(train_start) + '.png')
                     # plt.savefig(plots_dir + '\\' + str(plot_count + 1) + '_h1_' + str(h1_epochs) + '_h2_' + str(h2_epochs) + '.png')
 
                     # plt.show()
