@@ -1,6 +1,5 @@
 import os.path
 import time
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -20,7 +19,7 @@ class MLP:
     def __init__(self, X, Y, train_fraction, train_epochs, batch_size, layer_1_neurons, layer_2_neurons, learning_rate,
                  diss_weight=None, old_model=None, dissonance_type=None, make_h1_subset=True, copy_h1_weights=True,
                  history=None, use_history=False, train_start=0, initial_stdev=1, make_train_similar_to_history=False,
-                 non_parametric=False, test_model=True):
+                 model='L0', test_model=True):
 
         start_time = int(round(time.time() * 1000))
 
@@ -132,7 +131,7 @@ class MLP:
         output = tf.nn.sigmoid(logits, name='activationOutputLayer')
 
         # for non parametric compatibility
-        if non_parametric:
+        if model in ['L1', 'L2']:
             kernels = tf.placeholder(tf.float32, [None, len(history.instances)], name='kernels')
             hist_x = tf.placeholder(tf.float32, [None, n_features], name='hist_input')
             hist_y = tf.placeholder(tf.float32, [None, labels_dim], name='hist_labels')
@@ -171,34 +170,29 @@ class MLP:
                 if not use_history:
                     loss = log_loss + diss_weight * dissonance
                 else:
-                    if non_parametric:
-                        hist_dissonance = hist_y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(labels=hist_y,
-                                                                                                       logits=hist_logits,
-                                                                                                       name='hist_dissonance')
-                        hist_dissonance = tf.reshape(hist_dissonance, [-1])
-                        # todo: try with and without hist_dissonance
+                    if model in ['L1', 'L2']:
+
                         # product = kernels * hist_dissonance
                         # numerator = tf.reduce_sum(product, axis=1)
                         # denominator = tf.reduce_sum(kernels, axis=1)
                         # kernel_likelihood = numerator / denominator
 
-                        # L1:
-                        kernel_likelihood = tf.reduce_sum(kernels * hist_dissonance) / tf.reduce_sum(kernels)
-
-                        # # L2:
-                        # # shape = tf.shape(kernels)
-                        # kernel_likelihood = tf.reduce_sum(kernels, axis=1) / len(history.instances)
-
-                        # todo: try with and without normal dissonance
-                        # L1:
-                        loss = log_loss + diss_weight * kernel_likelihood
-
-                        # # L2:
-                        # loss = log_loss + diss_weight * kernel_likelihood * dissonance
+                        if model == 'L1':
+                            hist_dissonance = hist_y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(
+                                labels=hist_y,
+                                logits=hist_logits,
+                                name='hist_dissonance')
+                            hist_dissonance = tf.reshape(hist_dissonance, [-1])
+                            kernel_likelihood = tf.reduce_sum(kernels * hist_dissonance) / tf.reduce_sum(kernels)
+                            loss = log_loss + diss_weight * kernel_likelihood
+                        elif model == 'L2':
+                            # shape = tf.shape(kernels)
+                            kernel_likelihood = tf.reduce_sum(kernels, axis=1) / len(history.instances)
+                            loss = log_loss + diss_weight * kernel_likelihood * dissonance
                     else:
                         loss = log_loss + diss_weight * dissonance * likelihood
 
-                if non_parametric:
+                if model in ['L1', 'L2']:
                     # todo: maybe use average instead of sum?
                     compatibility = tf.reduce_sum(
                         y_old_correct * y_new_correct * tf.reduce_sum(kernels, axis=1)) / tf.reduce_sum(
@@ -223,7 +217,7 @@ class MLP:
             batches = int(len(X_train) / batch_size)
 
             if old_model is None:  # without compatibility
-                print("\nTRAINING h1:\ntrain fraction = " + str(train_fraction) + "\n")
+                print("TRAINING h1: train size = " + str(train_fraction))
                 # print("\nTRAINING h1:\ntrain fraction = " + str(int(100 * train_fraction)) + "%\n")
 
                 plot_x = []
@@ -283,10 +277,9 @@ class MLP:
                 else:
                     history_string = "NO HISTORY"
 
-                print("\nTRAINING h2 COMPATIBLE WITH h1:\ntrain fraction = " +
-                      str(train_fraction) + ", diss weight = " + str(diss_weight)
+                print("TRAINING h2: train size = " + str(train_fraction) + ", diss weight = " + str(diss_weight)
                       # str(int(100 * train_fraction)) + "%, diss weight = " + str(diss_weight)
-                      + ", diss type = " + str(dissonance_type) + ", " + history_string + "\n")
+                      + ", diss type = " + str(dissonance_type) + ", " + history_string)
 
                 # get the old model predictions
                 Y_train_old_probabilities = old_model.predict_probabilities(X_train)
@@ -296,7 +289,7 @@ class MLP:
                 Y_test_old_labels = tf.round(Y_test_old_probabilities).eval()
                 Y_test_old_correct = tf.cast(tf.equal(Y_test_old_labels, Y_test), tf.float32).eval()
 
-                if non_parametric:
+                if model in ['L1', 'L2']:
                     hist_Y_old_probabilities = old_model.predict_probabilities(history.instances)
                     # hist_Y_old_probabilities = tf.nn.sigmoid(hist_Y_old_logits, name='hist_probabilities').eval()
                     hist_Y_old_labels = tf.round(hist_Y_old_probabilities).eval()
@@ -327,7 +320,7 @@ class MLP:
                                                 y_old_probabilities: Y_batch_old_probabilities,
                                                 y_old_correct: Y_batch_old_correct})
                         else:
-                            if non_parametric:
+                            if model in ['L1', 'L2']:
                                 kernels_batch = kernels_train[batch_start:batch_end]
                                 sess.run(train_step,
                                          feed_dict={x: X_batch, y: Y_batch,
@@ -353,7 +346,7 @@ class MLP:
                                        y_old_probabilities: Y_test_old_probabilities,
                                        y_old_correct: Y_test_old_correct})
                     else:
-                        if non_parametric:
+                        if model in ['L1', 'L2']:
                             if use_history:
                                 out, com, new_correct, _hist_diss, _kernel_likelihood, acc = sess.run(
                                     [output, compatibility, y_new_correct, hist_dissonance, kernel_likelihood, accuracy],
@@ -388,7 +381,7 @@ class MLP:
                     self.old_correct = Y_test_old_correct
 
                     # print("FINISHED:\ttest auc = %.4f" % self.auc + ", compatibility = %.4f" % self.compatibility)
-                    print("FINISHED:\ttest acc = %.4f" % self.accuracy + ", compatibility = %.4f" % self.compatibility)
+                    print("test acc = %.4f" % self.accuracy + ", compatibility = %.4f" % self.compatibility)
                     # print("log loss = "+str(np.sum(log_lss)))
                     # print("dissonance = "+str(np.sum(diss)))
 
@@ -406,7 +399,6 @@ class MLP:
     def predict_probabilities(self, x):
         """
         predict the labels for dataset x
-        :param get_logits: to return only logits
         :param x: dataset to predict labels of
         :return: numpy array with the probability for each label
         """
@@ -495,18 +487,6 @@ class History:
         # self.likelihood = 1 + self.likelihood
         self.likelihood = np.reshape(self.likelihood, (len(df), 1))
 
-    def set_norm_dist_likelihood(self, df):
-        # compute likelihood for each attribute
-        sqr_diff = np.power(np.subtract(df, self.means), 2)
-        power = np.divide(sqr_diff, 2 * self.vars)
-        exp = np.exp(power)
-        sqrt = np.sqrt(2 * np.pi * self.vars)
-        attribute_likelihoods = np.divide(1, sqrt * exp)
-
-        # merge the likelihood of all attributes
-        self.likelihood = np.product(attribute_likelihoods, axis=1)
-        self.likelihood = np.reshape(self.likelihood, (len(df), 1))
-
     def set_cheat_likelihood(self, df, threshold, likely_val=1):
         """
         Works only with credit risk data-set
@@ -563,14 +543,14 @@ df_train_fraction = 0.1
 h1_train_fraction = 200
 h2_train_fraction = 5000
 h1_epochs = 1000
-h2_epochs = 300
-# diss_weights = range(6)
-# diss_multiply_factor = 50
-diss_weights = range(2)
-diss_multiply_factor = 300
+h2_epochs = 100
+diss_weights = range(6)
+diss_multiply_factor = 50
 repetitions = [0]
 # repetitions = range(10)
 random_state = 1
+min_history_size = 200
+max_history_size = 3000
 
 # full_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\KddCup\\2006\\kddCup_full_encoded.csv'
 # balanced_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\KddCup\\2006\\kddCup_balanced_encoded.csv'
@@ -606,16 +586,18 @@ df_full = ohe.fit_transform(df_full)
 print('pre-processing data and splitting into train and test sets...')
 
 # create user groups
-user_groups = []
+user_groups_train = []
+user_groups_test = []
 for user_group_name in user_group_names:
-    user_groups += [df_full.groupby([user_group_name])]
+    user_groups_test += [df_full.groupby([user_group_name])]
 
 # separate histories into training and test sets
 # todo: make generic and not for only first group
-students_group = user_groups[0]
+students_group = user_groups_test[0]
 df_train = students_group.apply(lambda x: x.sample(n=int(len(x)*df_train_fraction)+1, random_state=random_state))
 df_train.index = df_train.index.droplevel(0)
-user_groups[0] = df_full.drop(df_train.index).groupby([user_group_names[0]])
+user_groups_test[0] = df_full.drop(df_train.index).groupby([user_group_names[0]])
+user_groups_train += [df_train.groupby([user_group_names[0]])]
 
 # balance train set
 del df_train[user_group_names[0]]
@@ -623,40 +605,29 @@ target_group = df_train.groupby(target_col)
 df_train = target_group.apply(lambda x: x.sample(target_group.size().min(), random_state=random_state))
 df_train = df_train.reset_index(drop=True)
 
-# # delete user group columns
-# for df in [df_full]:
-#     for user_group_name in user_group_names:
-#         try:
-#             del df[user_group_name]
-#         except:
-#             pass
-
 first_repetition = True
 for repetition in repetitions:
 
-    # shuffled_indexes = np.random.randint(len(df_train), size=len(df_train))
-    # shuffled_indexes = shuffled_indexes[:int(len(df_train.index) * dataset_fraction)]
-    # df_train_subset = df_train.loc[shuffled_indexes]
-
-    # df_train_subset = df_train.sample(frac=dataset_fraction, random_state=repetition)
     df_train_subset = df_train.sample(frac=dataset_fraction, random_state=random_state)
-
-    # original_df = df_balanced.copy()
-    # df = df[:int(len(df.index) * dataset_fraction)]
 
     test_group = {str(repetition + 1): df_train_subset}.items()
     if first_repetition:
         first_repetition = False
         user_group_names.insert(0, 'test')
-        user_groups.insert(0, test_group)
+        user_groups_test.insert(0, test_group)
     else:
-        user_groups[0] = test_group
+        user_groups_test[0] = test_group
 
     X = df_train_subset.loc[:, df_train_subset.columns != target_col]
     Y = df_train_subset[[target_col]]
 
-    # Y = df_balanced.pop(target_col)
-    # X = df_balanced.loc[:]
+    X = X[:5000]
+    Y = Y[:5000]
+
+    scaler = MinMaxScaler()
+    X = scaler.fit_transform(X, Y)
+    labelizer = LabelBinarizer()
+    Y = labelizer.fit_transform(Y)
 
     # history_test_x = X[100:].loc[df['ExternalRiskEstimate'] > 75]
     # history_test_y = Y[100:].loc[df['ExternalRiskEstimate'] > 75]
@@ -665,54 +636,59 @@ for repetition in repetitions:
     # X_original = X
     # history_test_x_original = history_test_x
 
-    scaler = MinMaxScaler()
-    X = scaler.fit_transform(X, Y)
-    labelizer = LabelBinarizer()
-    Y = labelizer.fit_transform(Y)
-
     # history_test_x = scaler.fit_transform(history_test_x, history_test_y)
     # history_test_y = label.fit_transform(history_test_y)
 
-    h2_without_history_auc = {}
-    new_correct = {}
-    got_without_history = False
-
-    non_parametric = False
-    # non_parametric = True
+    # h2_without_history_auc = {}
+    # new_correct = {}
+    # got_without_history = False
 
     # Dissonance types
     # diss_types = ["D", "D'", "D''"]
-    diss_types = ["D"]
-
-    # Train configuration
-    # train_starts = range(21)
-    train_starts = [2]
-    # h1_epochs_set = [1000]
-    # h2_epochs_set = [300]
+    # diss_types = ["D"]
 
     # user_max_count = 10
 
     # h1s = []
+
+    # com_range = []
+    # acc_range = []
+    # h1_train_fractions = range(200, h2_train_fraction, 200)
+
+    # h1_train_fractions = [200]
+    # for h1_train_fraction in h1_train_fractions:
     h1 = MLP(X, Y, h1_train_fraction, h1_epochs, 50, 10, 5, 0.02)
 
-    print("training h2s")
+    print("training h2s not using history...")
 
-    h2s = []
+    h2s_not_using_history = []
     for i in diss_weights:
-        print(str(len(h2s)+1)+"/"+str(len(diss_weights)))
+        print(str(len(h2s_not_using_history) + 1) + "/" + str(len(diss_weights)))
         diss_weight = diss_multiply_factor * i / 100.0
-        h2s += [MLP(X, Y, h2_train_fraction, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D', True, True, test_model=False)]
+        h2s_not_using_history += [MLP(X, Y, h2_train_fraction, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D', True, True, test_model=False)]
         tf.reset_default_graph()
 
-    user_group_idx = 0
-    for user_group in user_groups:
+    # com_range += [abs(h2s[0].compatibility-h2s[1].compatibility)]
+    # acc_range += [abs(h2s[0].accuracy-h2s[1].accuracy)]
+    # h1_train_fractions = [x / h2_train_fraction for x in h1_train_fractions]
+    # plt.plot(h1_train_fractions, com_range, 'b', label='coms', marker='.')
+    # plt.plot(h1_train_fractions, acc_range, 'r', label='accs', marker='.')
+    # plt.xlabel('h1 train size / h2 train size')
+    # # plt.ylabel('')
+    # plt.legend(('compatibility range', 'accuracy range'), loc='upper right')
+    # plt.title('Varying h1 train sizes, where h2 train size = '+str(h2_train_fraction))
+    # plt.savefig('C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\different_h1_train_sizes.png')
+    # plt.show()
+    # break
+
+    user_group_idx = -1
+    for user_group_test in user_groups_test:
+        user_group_idx += 1
         user_group_name = user_group_names[user_group_idx]
 
         # if user_group_name == 'user_id' or user_group_name == 'teacher_id' or user_group_name == 'student_class_id':
         # if user_group_name == 'teacher_id' or user_group_name == 'student_class_id':
         #     continue
-
-        user_group_idx += 1
 
         directory = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\' + user_group_name
         if not os.path.exists(directory):
@@ -721,189 +697,135 @@ for repetition in repetitions:
             os.makedirs(directory + '\\by_accuracy_range')
             os.makedirs(directory + '\\by_compatibility_range')
 
-        min_size = 50
         total_users = 0
-        for user_id, user_instances in user_group:
-            if len(user_instances) >= min_size:
+        for user_id, user_test_set in user_group_test:
+            if len(user_test_set) >= min_history_size:
                 total_users += 1
 
         user_count = 0
-        for user_id, user_instances in user_group:
+        for user_id, user_test_set in user_group_test:
+            if user_group_name != 'test':
+                if len(user_test_set) < min_history_size:
+                    continue
+                if len(user_test_set) > max_history_size:
+                    continue
+                # if user_count > user_max_count:
+                #     continue
             user_count += 1
-            if len(user_instances) < min_size:
-                continue
-            # if user_count > user_max_count:
-                # continue
 
             for name in user_group_names:
                 try:
-                    del user_instances[name]
+                    del user_test_set[name]
                 except:
                     pass
-
             print(
-                str(user_count) + '/' + str(len(total_users)) + ' ' + user_group_name + ' ' + str(user_id) + ', instances: ' + str(
-                    len(user_instances)))
+                str(user_count) + '/' + str(total_users) + ' ' + user_group_name + ' ' + str(user_id) + ', instances: ' + str(
+                    len(user_test_set)) + '\n')
 
-            # get likelihood of data-set
-            # history_test_y = user_instances.pop(target_col)
-            # history = History(scaler.transform(user_instances), label.transform(hist_labels), 0.01)
+            history_test_x = scaler.transform(user_test_set.loc[:, user_test_set.columns != target_col])
+            history_test_y = labelizer.transform(user_test_set[[target_col]])
 
-            history_test_x = user_instances.loc[:, user_instances.columns != target_col]
-            history_test_y = user_instances[[target_col]]
+            h1_acc = h1.test(history_test_x, history_test_y)
 
-            history_test_x = scaler.transform(history_test_x)
-            history_test_y = labelizer.transform(history_test_y)
+            h2_on_history_not_using_history_x = []
+            h2_on_history_not_using_history_y = []
+            for h2 in h2s_not_using_history:
+                result_not_using_history = h2.test(history_test_x, history_test_y, h1)
+                h2_on_history_not_using_history_x += [result_not_using_history['compatibility']]
+                h2_on_history_not_using_history_y += [result_not_using_history['auc']]
 
-            # # todo: if not using cheat likelihood, set train similar to history FALSE!
-            # # history.set_cheat_likelihood(X_original, threshold)
-            # history.set_simple_likelihood(X, 5)
-            # # history.set_kernels(X, magnitude_multiplier=10)
+            min_x = min(h2_on_history_not_using_history_x)
+            max_x = max(h2_on_history_not_using_history_x)
+            min_y = min(h2_on_history_not_using_history_y)
+            max_y = max(h2_on_history_not_using_history_y)
 
-            # history_test = History(scaler.transform(user_instances))
+            if user_group_name != 'test':
 
-            # todo: choose only one
-            # history_test.set_cheat_likelihood(history_test_x_original)
-            # history_test.set_simple_likelihood(history_test_x)
+                user_train_set = user_groups_train[user_group_idx - 1].get_group(user_id)
+                for name in user_group_names:
+                    try:
+                        del user_test_set[name]
+                    except:
+                        pass
+                history_train_x = scaler.transform(user_train_set.loc[:, user_train_set.columns != target_col])
+                history_train_y = labelizer.transform(user_train_set[[target_col]])
 
-            # history_test.set_kernels(history_test_x, 0.5)
+                # history = History(history_test_x, history_test_y, 0.01)
+                history = History(history_train_x, history_train_y, 0.01)
+                history.set_simple_likelihood(X, 2)
+                # history.set_cheat_likelihood(X_original, threshold)
+                history.set_kernels(X, magnitude_multiplier=10)
 
-            # ----------------------- #
-            # Train compatible models #
-            # ----------------------- #
+                models = ['L0', 'L1', 'L2']
+                h2_on_history_L0_x = []
+                h2_on_history_L0_y = []
+                h2_on_history_L1_x = []
+                h2_on_history_L1_y = []
+                h2_on_history_L2_x = []
+                h2_on_history_L2_y = []
+                h2_on_history_x = [h2_on_history_L0_x, h2_on_history_L1_x, h2_on_history_L2_x]
+                h2_on_history_y = [h2_on_history_L0_y, h2_on_history_L1_y, h2_on_history_L2_y]
 
-            # h2_without_history_x = []
-            # h2_without_history_y = []
-            # h2_with_history_x = []
-            # h2_with_history_y = []
+                iteration = 0
+                for i in diss_weights:
+                    iteration += 1
+                    print(str(iteration) + "/" + str(len(diss_weights)))
+                    diss_weight = diss_multiply_factor * i / 100.0
+                    for j in range(len(models)):
+                        tf.reset_default_graph()
+                        h2_using_history = MLP(X, Y, h2_train_fraction, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D',
+                                               history=history, use_history=True, model=models[j], test_model=False)
+                        result_using_history = h2_using_history.test(history_test_x, history_test_y, h1)
+                        h2_on_history_x[j] += [result_using_history['compatibility']]
+                        h2_on_history_y[j] += [result_using_history['auc']]
 
-            # iteration = 0
-            # for train_start in train_starts:
-            #     for h1_epochs in h1_epochs_set:
-            #         for j in range(repetitions):
-            #
-            # todo: indent here
-            #
-            # h1 = MLP(X, Y, h1_train_fraction, h1_epochs, 50, 10, 5, 0.02,
-            #          train_start=train_start, initial_stdev=1, history=history)
-            #
-            # with open(results_path, 'w', newline='') as csv_file:
-            #     writer = csv.writer(csv_file)
-            #     row = ["compatibility", "h1 auc"]
-            #     for diss_type in diss_types:
-            #         row += ["h2 auc (" + diss_type + ") WITHOUT history"]
-            #         row += ["h2 auc (" + diss_type + ") WITH history"]
-            #     writer.writerow(row + ["dissonance weight", "user", "h1 train fraction = " + str(h1_train_fraction),
-            #                            "h2 train fraction = " + str(h2_train_fraction)])
-            #
-            # print('train start = ' + str(train_start) + '/' + str(len(train_starts) - 1))
-            #
-            # iteration = 0
-            #
-            # for h2_epochs in h2_epochs_set:
-            # todo: indent here
-            #
-            # h2_without_history_x = []
-            # h2_without_history_y = []
-            # h2_with_history_x = []
-            # h2_with_history_y = []
+                # PLOT
+                # all hist approaches and no hist plot
+                for model in h2_on_history_x:
+                    min_model = min(model)
+                    if min_x > min_model:
+                        min_x = min_model
+                    max_model = max(model)
+                    if max_x < max_model:
+                        max_x = max_model
+                for model in h2_on_history_y:
+                    min_model = min(model)
+                    if min_y > min_model:
+                        min_y = min_model
+                    max_model = max(model)
+                    if max_y < max_model:
+                        max_y = max_model
+                        
+                h1_x = [min_x, max_x]
+                h1_y = [h1_acc, h1_acc]
+                plt.plot(h1_x, h1_y, 'k--', label='h1')
+                plt.plot(h2_on_history_not_using_history_x, h2_on_history_not_using_history_y, 'b', marker='o', linewidth=2, label='h2 without history')
+                plt.plot(h2_on_history_L0_x, h2_on_history_L0_y, 'r', marker='.', label='h2 with L0')
+                plt.plot(h2_on_history_L1_x, h2_on_history_L1_y, 'm', marker='.', label='h2 with L1')
+                plt.plot(h2_on_history_L2_x, h2_on_history_L2_y, 'orange', marker='.', label='h2 with L2')
+                plt.xlabel('compatibility')
+                plt.ylabel('accuracy')
+                plt.legend(('h1', 'h2 not using history', 'h2 using L0', 'h2 using L1', 'h2 using L2'), loc='center left')
 
-            h2_on_history_without_history_x = []
-            h2_on_history_without_history_y = []
-            # h2_on_history_with_history_x = []
-            # h2_on_history_with_history_y = []
-
-            # for i in diss_weights:
-            #     offset = 0
-            #     for use_history in [False, True]:
-            #         for diss_type in diss_types:
-            #
-            #             iteration += 1
-            #             iterations = len(diss_weights) * repetitions * len(diss_types) * 2
-            #             # if not got_without_history:
-            #             #     iterations *= 2
-            #             print("-------\n" + str(iteration) + "/" + str(iterations) + "\n-------")
-            #
-            #             # if not use_history and got_without_history:
-            #             #     # compute compatibility for this history
-            #             #     current_new_correct = new_correct[i]
-            #             #     numerator = old_correct * current_new_correct * likelihood
-            #             #     numerator_sum = np.sum(numerator)
-            #             #     denominator = old_correct * likelihood
-            #             #     denominator_sum = np.sum(denominator)
-            #             #     compatibility = numerator_sum / denominator_sum
-            #             #     h2_without_history_x += [compatibility]
-            #             #     h2_without_history_y += [h2_without_history_auc[i]]
-            #             #     print('test auc = '+str(h2_without_history_auc[i])+', compatibility = '+str(compatibility))
-            #             #     continue
-            #
-            #             diss_weight = factor * i / 100.0
-            #             # diss_weight = factor * i
-            #             tf.reset_default_graph()
-            #
-            #             # h2 = MLP(X, Y, h2_train_fraction, h2_epochs, 50, 10, 5,
-            #             #          0.02, diss_weight, h1, diss_type, True, True, history, use_history,
-            #             #          non_parametric=non_parametric)
-            #
-            #             result_on_history = h2.test(history_test_x, history_test_y, h1, history_test)
-            #
-            #             # # save no history vectors for computing compatibility with different user histories
-            #             # if not use_history:
-            #             #     h2_without_history_auc[i] = h2.auc
-            #             #     new_correct[i] = h2.new_correct
-            #             #     old_correct = h2.old_correct
-            #             #     likelihood = history.likelihood[h2.test_indexes]
-            #
-            #             # with open(results_path, 'a', newline='') as csv_file:
-            #             #     writer = csv.writer(csv_file)
-            #             #     row = [str(h2.compatibility), str(h1.auc)]
-            #             #     for k in diss_types*2:
-            #             #         row += [""]
-            #             #     row += [str(diss_weight), str(user_id)]
-            #             #     row[2 + offset] = str(h2.auc)
-            #             #     writer.writerow(row)
-            #             # offset += 1
-            #
-            #             # for plot
-            #             if not use_history:
-            #                 h2_x = h2_without_history_x
-            #                 h2_y = h2_without_history_y
-            #                 h2_on_history_x = h2_on_history_without_history_x
-            #                 h2_on_history_y = h2_on_history_without_history_y
-            #             else:
-            #                 h2_x = h2_with_history_x
-            #                 h2_y = h2_with_history_y
-            #                 h2_on_history_x = h2_on_history_with_history_x
-            #                 h2_on_history_y = h2_on_history_with_history_y
-            #             h2_x += [h2.compatibility]
-            #             h2_y += [h2.auc]
-            #             # h2_on_history_x += [result_on_history['compatibility']]
-            #             # h2_on_history_y += [result_on_history['auc']]
-            #
-            # # got_without_history = True
-
-            # try:
-            tf.reset_default_graph()
-            h1_auc = h1.test(history_test_x, history_test_y)
-            for h2 in h2s:
-                # tf.reset_default_graph()
-                result_on_history = h2.test(history_test_x, history_test_y, h1)
-                h2_on_history_without_history_x += [result_on_history['compatibility']]
-                h2_on_history_without_history_y += [result_on_history['auc']]
-            # except ValueError:
-            #     continue
-            # plot
-
+            else:  # on test
+                h1_x = [min_x, max_x]
+                h1_y = [h1_acc, h1_acc]
+                plt.plot(h1_x, h1_y, 'k--', label='h1')
+                plt.plot(h2_on_history_not_using_history_x, h2_on_history_not_using_history_y, 'b', marker='.', label='h2')
+                plt.xlabel('compatibility')
+                plt.ylabel('accuracy')
+                plt.legend(('h1', 'h2'), loc='center left')
             # # hist and no hist plot
-            # h1_x = [min(min(h2_without_history_x), min(h2_with_history_x)),
-            #         max(max(h2_without_history_x), max(h2_with_history_x))]
-            # h1_y = [h1.auc, h1.auc]
+            # h1_x = [min(min(h2_on_history_not_using_history_x), min(h2_on_history_L0_x)),
+            #         max(max(h2_on_history_not_using_history_x), max(h2_on_history_L0_x))]
+            # h1_y = [h1.accuracy, h1.accuracy]
             # plt.plot(h1_x, h1_y, 'k--', label='h1')
-            # plt.plot(h2_without_history_x, h2_without_history_y, 'bs', label='h2 without history')
-            # plt.plot(h2_with_history_x, h2_with_history_y, 'r^', label='h2 with history')
+            # plt.plot(h2_on_history_not_using_history_x, h2_on_history_not_using_history_y, 'b', marker='o', linewidth=2,
+            #          label='h2 without history')
+            # plt.plot(h2_on_history_L0_x, h2_on_history_L0_y, 'r', marker='.', label='h2 with history')
             # plt.xlabel('compatibility')
-            # plt.ylabel('AUC')
-            # plt.legend(('h1', 'h2 without history', 'h2 with history'), loc='center left')
+            # plt.ylabel('accuracy')
+            # plt.legend(('h1', 'h2 not using history', 'h2 using history'), loc='center left')
 
             # # hist and no hist, and on hist test set plot
             # h1_x = [min(min(h2_without_history_x), min(h2_with_history_x),
@@ -921,17 +843,6 @@ for repetition in repetitions:
             # plt.legend(('h1', 'h2 without history', 'h2 with history',
             #             'h2 on hist without history', 'h2 on hist with history'), loc='center left')
 
-            # for all students and teachers
-            h1_x = [min(h2_on_history_without_history_x), max(h2_on_history_without_history_x)]
-            h1_y = [h1_auc, h1_auc]
-            plt.plot(h1_x, h1_y, 'k--', label='h1')
-            plt.plot(h2_on_history_without_history_x, h2_on_history_without_history_y, 'bs', label='h2')
-            plt.xlabel('compatibility')
-            # plt.ylabel('AUC')
-            plt.ylabel('accuracy')
-            # plt.legend(('h1', 'h2'), loc='center left')
-
-
             # plt.title('Train set ' + str(train_start)+', size='+str(len(h1.train_indexes)))
 
             # save plot
@@ -939,11 +850,8 @@ for repetition in repetitions:
             plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\' + user_group_name
             plot_count = len(os.listdir(plots_dir))
 
-            auc_range = int(1000 * (max(h2_on_history_without_history_y) - min(h2_on_history_without_history_y)))
-            com_range = int(1000 * (max(h2_on_history_without_history_x) - min(h2_on_history_without_history_x)))
-
-            # if user_group == 'test':
-            #     plt.show()
+            com_range = int(100 * (max_x - min_x))
+            auc_range = int(100 * (max_y - min_y))
 
             if user_group_name == 'test':
                 plt.title(user_group_name + ' ' + str(repetition + 1) + ', train sets: h1=' + str(h1_train_fraction) + ' h2='+ str(h2_train_fraction))
@@ -951,10 +859,7 @@ for repetition in repetitions:
                 plt.show()
             else:
                 plt.title(user_group_name + ' ' + str(user_id) + ', ' + str(len(history_test_y)) + ' instances')
-                plt.savefig(plots_dir + '\\by_hist_length\\len_' + str(len(user_instances)) + '_' + user_group_name + '_' + str(user_id) + '.png')
+                plt.savefig(plots_dir + '\\by_hist_length\\len_' + str(len(user_test_set)) + '_' + user_group_name + '_' + str(user_id) + '.png')
                 plt.savefig(plots_dir + '\\by_accuracy_range\\acc_' + str(auc_range) +'_' + user_group_name + '_' + str(user_id) + '.png')
                 plt.savefig(plots_dir + '\\by_compatibility_range\\com_' + str(com_range) +'_' + user_group_name + '_' + str(user_id) + '.png')
-                # plt.savefig(plots_dir + '\\train_set_' + str(train_start) + '.png')
-                # plt.savefig(plots_dir + '\\' + str(plot_count + 1) + '_h1_' + str(h1_epochs) + '_h2_' + str(h2_epochs) + '.png')
-            # plt.show()
             plt.clf()
