@@ -538,19 +538,18 @@ target_col = 'correct'
 categ_cols = ['tutor_mode', 'answer_type', 'type']
 # user_group_names = ['user_id', 'teacher_id', 'student_class_id']
 user_group_names = ['user_id']
-dataset_fraction = 0.4
-df_train_fraction = 0.1
-h1_train_fraction = 200
-h2_train_fraction = 5000
+history_train_fraction = 0.5
+h1_train_size = 200
+h2_train_size = 5000
 h1_epochs = 1000
 h2_epochs = 100
 diss_weights = range(6)
-diss_multiply_factor = 50
+diss_multiply_factor = 0.5
 repetitions = [0]
 # repetitions = range(10)
 random_state = 1
 min_history_size = 200
-max_history_size = 3000
+max_history_size = 300
 
 # full_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\KddCup\\2006\\kddCup_full_encoded.csv'
 # balanced_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\KddCup\\2006\\kddCup_balanced_encoded.csv'
@@ -568,8 +567,6 @@ max_history_size = 3000
 # pre-process data
 
 df_full = pd.read_csv(full_dataset_path)
-# df_balanced = pd.read_csv(balanced_dataset_path)
-# df = df[:int(len(df.index) * dataset_fraction)]
 
 try:
     del df_full['school_id']
@@ -594,7 +591,8 @@ for user_group_name in user_group_names:
 # separate histories into training and test sets
 # todo: make generic and not for only first group
 students_group = user_groups_test[0]
-df_train = students_group.apply(lambda x: x.sample(n=int(len(x)*df_train_fraction)+1, random_state=random_state))
+# df_train = students_group.apply(lambda x: x.sample(n=int(len(x) * history_train_fraction) + 1, random_state=random_state))
+df_train = students_group.apply(lambda x: x[:int(len(x) * history_train_fraction) + 1])
 df_train.index = df_train.index.droplevel(0)
 user_groups_test[0] = df_full.drop(df_train.index).groupby([user_group_names[0]])
 user_groups_train += [df_train.groupby([user_group_names[0]])]
@@ -608,7 +606,7 @@ df_train = df_train.reset_index(drop=True)
 first_repetition = True
 for repetition in repetitions:
 
-    df_train_subset = df_train.sample(frac=dataset_fraction, random_state=random_state)
+    df_train_subset = df_train.sample(n=h2_train_size, random_state=random_state)
 
     test_group = {str(repetition + 1): df_train_subset}.items()
     if first_repetition:
@@ -657,15 +655,15 @@ for repetition in repetitions:
 
     # h1_train_fractions = [200]
     # for h1_train_fraction in h1_train_fractions:
-    h1 = MLP(X, Y, h1_train_fraction, h1_epochs, 50, 10, 5, 0.02)
+    h1 = MLP(X, Y, h1_train_size, h1_epochs, 50, 10, 5, 0.02)
 
     print("training h2s not using history...")
 
     h2s_not_using_history = []
     for i in diss_weights:
         print(str(len(h2s_not_using_history) + 1) + "/" + str(len(diss_weights)))
-        diss_weight = diss_multiply_factor * i / 100.0
-        h2s_not_using_history += [MLP(X, Y, h2_train_fraction, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D', True, True, test_model=False)]
+        diss_weight = diss_multiply_factor * i
+        h2s_not_using_history += [MLP(X, Y, h2_train_size, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D', True, True, test_model=False)]
         tf.reset_default_graph()
 
     # com_range += [abs(h2s[0].compatibility-h2s[1].compatibility)]
@@ -718,6 +716,7 @@ for repetition in repetitions:
                     del user_test_set[name]
                 except:
                     pass
+
             print(
                 str(user_count) + '/' + str(total_users) + ' ' + user_group_name + ' ' + str(user_id) + ', instances: ' + str(
                     len(user_test_set)) + '\n')
@@ -744,9 +743,10 @@ for repetition in repetitions:
                 user_train_set = user_groups_train[user_group_idx - 1].get_group(user_id)
                 for name in user_group_names:
                     try:
-                        del user_test_set[name]
+                        del user_train_set[name]
                     except:
                         pass
+
                 history_train_x = scaler.transform(user_train_set.loc[:, user_train_set.columns != target_col])
                 history_train_y = labelizer.transform(user_train_set[[target_col]])
 
@@ -770,10 +770,10 @@ for repetition in repetitions:
                 for i in diss_weights:
                     iteration += 1
                     print(str(iteration) + "/" + str(len(diss_weights)))
-                    diss_weight = diss_multiply_factor * i / 100.0
+                    diss_weight = diss_multiply_factor * i
                     for j in range(len(models)):
                         tf.reset_default_graph()
-                        h2_using_history = MLP(X, Y, h2_train_fraction, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D',
+                        h2_using_history = MLP(X, Y, h2_train_size, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D',
                                                history=history, use_history=True, model=models[j], test_model=False)
                         result_using_history = h2_using_history.test(history_test_x, history_test_y, h1)
                         h2_on_history_x[j] += [result_using_history['compatibility']]
@@ -854,7 +854,7 @@ for repetition in repetitions:
             auc_range = int(100 * (max_y - min_y))
 
             if user_group_name == 'test':
-                plt.title(user_group_name + ' ' + str(repetition + 1) + ', train sets: h1=' + str(h1_train_fraction) + ' h2='+ str(h2_train_fraction))
+                plt.title(user_group_name + ' ' + str(repetition + 1) + ', train sets: h1=' + str(h1_train_size) + ' h2=' + str(h2_train_size))
                 plt.savefig(plots_dir + '\\test_'+str(repetition + 1)+'.png')
                 plt.show()
             else:
