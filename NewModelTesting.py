@@ -1,3 +1,4 @@
+import csv
 import os.path
 import time
 import matplotlib.pyplot as plt
@@ -16,10 +17,10 @@ class MLP:
     to be able to produce compatible updates.
     """
 
-    def __init__(self, X, Y, train_fraction, train_epochs, batch_size, layer_1_neurons, layer_2_neurons, learning_rate,
+    def __init__(self, X, Y, train_fraction, train_epochs, batch_size, layer_1_neurons, layer_2_neurons, learning_rate=0.02,
                  diss_weight=None, old_model=None, dissonance_type=None, make_h1_subset=True, copy_h1_weights=True,
                  history=None, use_history=False, train_start=0, initial_stdev=1, make_train_similar_to_history=False,
-                 model='L0', test_model=True):
+                 model_type='L0', test_model=True, weights_seed=1):
 
         start_time = int(round(time.time() * 1000))
 
@@ -99,13 +100,12 @@ class MLP:
         # set initial weights
         if old_model is None or not copy_h1_weights:
             # if True:
-            w1_initial = tf.truncated_normal([n_features, layer_1_neurons], mean=0,
-                                             stddev=initial_stdev / np.sqrt(n_features))
-            b1_initial = tf.truncated_normal([layer_1_neurons], mean=0, stddev=initial_stdev / np.sqrt(n_features))
-            w2_initial = tf.random_normal([layer_1_neurons, layer_2_neurons], mean=0, stddev=initial_stdev)
-            b2_initial = tf.random_normal([layer_2_neurons], mean=0, stddev=initial_stdev)
-            wo_initial = tf.random_normal([layer_2_neurons, labels_dim], mean=0, stddev=initial_stdev)
-            bo_initial = tf.random_normal([labels_dim], mean=0, stddev=initial_stdev)
+            w1_initial = tf.truncated_normal([n_features, layer_1_neurons], mean=0,stddev=initial_stdev / np.sqrt(n_features), seed=weights_seed)
+            b1_initial = tf.truncated_normal([layer_1_neurons], mean=0, stddev=initial_stdev / np.sqrt(n_features), seed=weights_seed)
+            w2_initial = tf.random_normal([layer_1_neurons, layer_2_neurons], mean=0, stddev=initial_stdev, seed=weights_seed)
+            b2_initial = tf.random_normal([layer_2_neurons], mean=0, stddev=initial_stdev, seed=weights_seed)
+            wo_initial = tf.random_normal([layer_2_neurons, labels_dim], mean=0, stddev=initial_stdev, seed=weights_seed)
+            bo_initial = tf.random_normal([labels_dim], mean=0, stddev=initial_stdev, seed=weights_seed)
         else:
             w1_initial = tf.convert_to_tensor(old_model.final_W1)
             b1_initial = tf.convert_to_tensor(old_model.final_b1)
@@ -131,7 +131,7 @@ class MLP:
         output = tf.nn.sigmoid(logits, name='activationOutputLayer')
 
         # for non parametric compatibility
-        if model in ['L1', 'L2']:
+        if model_type in ['L1', 'L2']:
             kernels = tf.placeholder(tf.float32, [None, len(history.instances)], name='kernels')
             hist_x = tf.placeholder(tf.float32, [None, n_features], name='hist_input')
             hist_y = tf.placeholder(tf.float32, [None, labels_dim], name='hist_labels')
@@ -170,14 +170,14 @@ class MLP:
                 if not use_history:
                     loss = log_loss + diss_weight * dissonance
                 else:
-                    if model in ['L1', 'L2']:
+                    if model_type in ['L1', 'L2']:
 
                         # product = kernels * hist_dissonance
                         # numerator = tf.reduce_sum(product, axis=1)
                         # denominator = tf.reduce_sum(kernels, axis=1)
                         # kernel_likelihood = numerator / denominator
 
-                        if model == 'L1':
+                        if model_type == 'L1':
                             hist_dissonance = hist_y_old_correct * tf.nn.sigmoid_cross_entropy_with_logits(
                                 labels=hist_y,
                                 logits=hist_logits,
@@ -185,14 +185,14 @@ class MLP:
                             hist_dissonance = tf.reshape(hist_dissonance, [-1])
                             kernel_likelihood = tf.reduce_sum(kernels * hist_dissonance) / tf.reduce_sum(kernels)
                             loss = log_loss + diss_weight * kernel_likelihood
-                        elif model == 'L2':
+                        elif model_type == 'L2':
                             # shape = tf.shape(kernels)
                             kernel_likelihood = tf.reduce_sum(kernels, axis=1) / len(history.instances)
                             loss = log_loss + diss_weight * kernel_likelihood * dissonance
                     else:
                         loss = log_loss + diss_weight * dissonance * likelihood
 
-                if model in ['L1', 'L2']:
+                if model_type in ['L1', 'L2']:
                     # todo: maybe use average instead of sum?
                     compatibility = tf.reduce_sum(
                         y_old_correct * y_new_correct * tf.reduce_sum(kernels, axis=1)) / tf.reduce_sum(
@@ -271,7 +271,7 @@ class MLP:
 
                 if history is not None:
                     if use_history:
-                        history_string = "USE HISTORY"
+                        history_string = "USING " + model_type
                     else:
                         history_string = "IGNORE HISTORY"
                 else:
@@ -289,7 +289,7 @@ class MLP:
                 Y_test_old_labels = tf.round(Y_test_old_probabilities).eval()
                 Y_test_old_correct = tf.cast(tf.equal(Y_test_old_labels, Y_test), tf.float32).eval()
 
-                if model in ['L1', 'L2']:
+                if model_type in ['L1', 'L2']:
                     hist_Y_old_probabilities = old_model.predict_probabilities(history.instances)
                     # hist_Y_old_probabilities = tf.nn.sigmoid(hist_Y_old_logits, name='hist_probabilities').eval()
                     hist_Y_old_labels = tf.round(hist_Y_old_probabilities).eval()
@@ -320,7 +320,7 @@ class MLP:
                                                 y_old_probabilities: Y_batch_old_probabilities,
                                                 y_old_correct: Y_batch_old_correct})
                         else:
-                            if model in ['L1', 'L2']:
+                            if model_type in ['L1', 'L2']:
                                 kernels_batch = kernels_train[batch_start:batch_end]
                                 sess.run(train_step,
                                          feed_dict={x: X_batch, y: Y_batch,
@@ -346,7 +346,7 @@ class MLP:
                                        y_old_probabilities: Y_test_old_probabilities,
                                        y_old_correct: Y_test_old_correct})
                     else:
-                        if model in ['L1', 'L2']:
+                        if model_type in ['L1', 'L2']:
                             if use_history:
                                 out, com, new_correct, _hist_diss, _kernel_likelihood, acc = sess.run(
                                     [output, compatibility, y_new_correct, hist_dissonance, kernel_likelihood, accuracy],
@@ -531,25 +531,27 @@ class History:
 # results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\results\\fraudDetection.csv"
 # target_col = 'isFraud'
 
-full_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_full_encoded.csv'
+full_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_full_encoded_with_skill.csv'
 # balanced_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_balanced_encoded.csv'
-results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\results\\e-learning.csv"
+results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\results\\e-learning"
 target_col = 'correct'
 categ_cols = ['tutor_mode', 'answer_type', 'type']
-# user_group_names = ['user_id', 'teacher_id', 'student_class_id']
+# categ_cols = ['skill', 'tutor_mode', 'answer_type', 'type']
 user_group_names = ['user_id']
 history_train_fraction = 0.5
-h1_train_size = 200
+h1_train_size = 500
 h2_train_size = 5000
-h1_epochs = 1000
+h1_epochs = 300
+# h1_epochs = 10
 h2_epochs = 100
+# h2_epochs = 2
 diss_weights = range(6)
 diss_multiply_factor = 0.5
-repetitions = [0]
-# repetitions = range(10)
-random_state = 1
+seeds = range(5)
 min_history_size = 200
-max_history_size = 300
+max_history_size = 500
+current_user_count = 0
+split_by_chronological_order = True
 
 # full_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\KddCup\\2006\\kddCup_full_encoded.csv'
 # balanced_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\KddCup\\2006\\kddCup_balanced_encoded.csv'
@@ -566,12 +568,22 @@ max_history_size = 300
 
 # pre-process data
 
+results_path += '\\'+str(len(os.listdir(results_path)))+'.csv'
+with open(results_path, 'w', newline='') as file_out:
+    writer = csv.writer(file_out)
+    header = ['train frac', 'user_id', 'instances', 'train seed', 'comp range', 'acc range', 'h1 acc',
+              'baseline x', 'baseline y', 'diss weight', 'no hist x', 'no hist y',
+              'L0 x', 'L0 y', 'L1 x', 'L1 y', 'L2 x', 'L2 y']
+    writer.writerow(header)
+
+
 df_full = pd.read_csv(full_dataset_path)
 
 try:
     del df_full['school_id']
     del df_full['teacher_id']
     del df_full['student_class_id']
+    del df_full['skill']
 except:
     pass
 
@@ -591,8 +603,11 @@ for user_group_name in user_group_names:
 # separate histories into training and test sets
 # todo: make generic and not for only first group
 students_group = user_groups_test[0]
-# df_train = students_group.apply(lambda x: x.sample(n=int(len(x) * history_train_fraction) + 1, random_state=random_state))
-df_train = students_group.apply(lambda x: x[:int(len(x) * history_train_fraction) + 1])
+if split_by_chronological_order:
+    df_train = students_group.apply(lambda x: x[:int(len(x) * history_train_fraction) + 1])
+else:
+    df_train = students_group.apply(lambda x: x.sample(n=int(len(x) * history_train_fraction) + 1, random_state=1))
+
 df_train.index = df_train.index.droplevel(0)
 user_groups_test[0] = df_full.drop(df_train.index).groupby([user_group_names[0]])
 user_groups_train += [df_train.groupby([user_group_names[0]])]
@@ -600,32 +615,32 @@ user_groups_train += [df_train.groupby([user_group_names[0]])]
 # balance train set
 del df_train[user_group_names[0]]
 target_group = df_train.groupby(target_col)
-df_train = target_group.apply(lambda x: x.sample(target_group.size().min(), random_state=random_state))
+df_train = target_group.apply(lambda x: x.sample(target_group.size().min(), random_state=1))
 df_train = df_train.reset_index(drop=True)
 
-first_repetition = True
-for repetition in repetitions:
+df_train_subsets_by_seed = []
+Xs_by_seed = []
+Ys_by_seed = []
+h1s_by_seed = []
+h2s_not_using_history_by_seed = []
 
-    df_train_subset = df_train.sample(n=h2_train_size, random_state=random_state)
+test_group = {}
+for seed in seeds:
+    df_train_subset = df_train.sample(n=h2_train_size, random_state=seed)
+    df_train_subsets_by_seed += [df_train_subset]
 
-    test_group = {str(repetition + 1): df_train_subset}.items()
-    if first_repetition:
-        first_repetition = False
-        user_group_names.insert(0, 'test')
-        user_groups_test.insert(0, test_group)
-    else:
-        user_groups_test[0] = test_group
+    test_group[str(seed+1)] = df_train_subset
 
     X = df_train_subset.loc[:, df_train_subset.columns != target_col]
     Y = df_train_subset[[target_col]]
-
-    X = X[:5000]
-    Y = Y[:5000]
 
     scaler = MinMaxScaler()
     X = scaler.fit_transform(X, Y)
     labelizer = LabelBinarizer()
     Y = labelizer.fit_transform(Y)
+
+    Xs_by_seed += [X]
+    Ys_by_seed += [Y]
 
     # history_test_x = X[100:].loc[df['ExternalRiskEstimate'] > 75]
     # history_test_y = Y[100:].loc[df['ExternalRiskEstimate'] > 75]
@@ -656,6 +671,7 @@ for repetition in repetitions:
     # h1_train_fractions = [200]
     # for h1_train_fraction in h1_train_fractions:
     h1 = MLP(X, Y, h1_train_size, h1_epochs, 50, 10, 5, 0.02)
+    h1s_by_seed += [h1]
 
     print("training h2s not using history...")
 
@@ -663,63 +679,89 @@ for repetition in repetitions:
     for i in diss_weights:
         print(str(len(h2s_not_using_history) + 1) + "/" + str(len(diss_weights)))
         diss_weight = diss_multiply_factor * i
-        h2s_not_using_history += [MLP(X, Y, h2_train_size, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D', True, True, test_model=False)]
+        h2s_not_using_history += [MLP(X, Y, h2_train_size, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D', True,
+                                      test_model=False, copy_h1_weights=False, weights_seed=2)]
         tf.reset_default_graph()
+    h2s_not_using_history_by_seed += [h2s_not_using_history]
 
-    # com_range += [abs(h2s[0].compatibility-h2s[1].compatibility)]
-    # acc_range += [abs(h2s[0].accuracy-h2s[1].accuracy)]
-    # h1_train_fractions = [x / h2_train_fraction for x in h1_train_fractions]
-    # plt.plot(h1_train_fractions, com_range, 'b', label='coms', marker='.')
-    # plt.plot(h1_train_fractions, acc_range, 'r', label='accs', marker='.')
-    # plt.xlabel('h1 train size / h2 train size')
-    # # plt.ylabel('')
-    # plt.legend(('compatibility range', 'accuracy range'), loc='upper right')
-    # plt.title('Varying h1 train sizes, where h2 train size = '+str(h2_train_fraction))
-    # plt.savefig('C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\different_h1_train_sizes.png')
-    # plt.show()
-    # break
+user_group_names.insert(0, 'test')
+user_groups_test.insert(0, test_group.items())
 
-    user_group_idx = -1
-    for user_group_test in user_groups_test:
-        user_group_idx += 1
-        user_group_name = user_group_names[user_group_idx]
+# com_range += [abs(h2s[0].compatibility-h2s[1].compatibility)]
+# acc_range += [abs(h2s[0].accuracy-h2s[1].accuracy)]
+# h1_train_fractions = [x / h2_train_fraction for x in h1_train_fractions]
+# plt.plot(h1_train_fractions, com_range, 'b', label='coms', marker='.')
+# plt.plot(h1_train_fractions, acc_range, 'r', label='accs', marker='.')
+# plt.xlabel('h1 train size / h2 train size')
+# # plt.ylabel('')
+# plt.legend(('compatibility range', 'accuracy range'), loc='upper right')
+# plt.title('Varying h1 train sizes, where h2 train size = '+str(h2_train_fraction))
+# plt.savefig('C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\different_h1_train_sizes.png')
+# plt.show()
+# break
 
-        # if user_group_name == 'user_id' or user_group_name == 'teacher_id' or user_group_name == 'student_class_id':
-        # if user_group_name == 'teacher_id' or user_group_name == 'student_class_id':
-        #     continue
+by_user_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\by_seed'
+if not os.path.exists(by_user_dir):
+    os.makedirs(by_user_dir)
 
-        directory = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\' + user_group_name
-        if not os.path.exists(directory):
-            os.makedirs(directory)
-            os.makedirs(directory + '\\by_hist_length')
-            os.makedirs(directory + '\\by_accuracy_range')
-            os.makedirs(directory + '\\by_compatibility_range')
+user_group_idx = -1
+for user_group_test in user_groups_test:
+    user_group_idx += 1
+    user_group_name = user_group_names[user_group_idx]
 
-        total_users = 0
-        for user_id, user_test_set in user_group_test:
-            if len(user_test_set) >= min_history_size:
-                total_users += 1
+    # if user_group_name == 'user_id' or user_group_name == 'teacher_id' or user_group_name == 'student_class_id':
+    # if user_group_name == 'teacher_id' or user_group_name == 'student_class_id':
+    #     continue
+    for seed in seeds:
+        plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\seed_' + str(seed + 1)
+        if not os.path.exists(plots_dir):
+            os.makedirs(plots_dir)
+        if user_group_name != 'test':
+            plots_dir += '\\' + user_group_name
+            if not os.path.exists(plots_dir):
+                os.makedirs(plots_dir + '\\by_hist_length')
+                os.makedirs(plots_dir + '\\by_accuracy_range')
+                os.makedirs(plots_dir + '\\by_compatibility_range')
 
-        user_count = 0
-        for user_id, user_test_set in user_group_test:
-            if user_group_name != 'test':
-                if len(user_test_set) < min_history_size:
-                    continue
-                if len(user_test_set) > max_history_size:
-                    continue
-                # if user_count > user_max_count:
-                #     continue
-            user_count += 1
+    total_users = 0
+    for user_id, user_test_set in user_group_test:
+        if len(user_test_set) >= min_history_size:
+            total_users += 1
 
-            for name in user_group_names:
-                try:
-                    del user_test_set[name]
-                except:
-                    pass
+    user_count = 0
+    for user_id, user_test_set in user_group_test:
+        if user_group_name != 'test':
+            if len(user_test_set) < min_history_size:
+                continue
+            if len(user_test_set) > max_history_size:
+                continue
+            # if user_count > user_max_count:
+            #     continue
 
+        user_count += 1
+        if user_count < current_user_count:
+            continue
+
+        for name in user_group_names:
+            try:
+                del user_test_set[name]
+            except:
+                pass
+
+        for seed in seeds:
+            if user_group_name == 'test' and seed != user_count-1:
+                continue
+            print('SEED ' + str(seed + 1) + '\n')
+            plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\seed_' + str(
+                seed + 1) + '\\' + user_group_name
             print(
                 str(user_count) + '/' + str(total_users) + ' ' + user_group_name + ' ' + str(user_id) + ', instances: ' + str(
-                    len(user_test_set)) + '\n')
+                    len(user_test_set)) + ', seed='+str(seed+1)+'\n')
+
+            X = Xs_by_seed[seed]
+            Y = Ys_by_seed[seed]
+            h1 = h1s_by_seed[seed]
+            h2s_not_using_history = h2s_not_using_history_by_seed[seed]
 
             history_test_x = scaler.transform(user_test_set.loc[:, user_test_set.columns != target_col])
             history_test_y = labelizer.transform(user_test_set[[target_col]])
@@ -747,8 +789,22 @@ for repetition in repetitions:
                     except:
                         pass
 
+                history_len = len(user_test_set) + len(user_train_set)
+
                 history_train_x = scaler.transform(user_train_set.loc[:, user_train_set.columns != target_col])
                 history_train_y = labelizer.transform(user_train_set[[target_col]])
+
+                print('training baseline model...')
+                h2_baseline = MLP(history_train_x, history_train_y, len(user_train_set), h1_epochs, 50, 10, 5,
+                                  weights_seed=2)
+                result_not_using_history = h2_baseline.test(history_test_x, history_test_y, h1)
+                h2_baseline_x = [result_not_using_history['compatibility']]
+                h2_baseline_y = [result_not_using_history['auc']]
+
+                min_x = min(min_x, h2_baseline_x[0])
+                max_x = max(max_x, h2_baseline_x[0])
+                min_y = min(min_y, h2_baseline_y[0])
+                max_y = max(max_y, h2_baseline_y[0])
 
                 # history = History(history_test_x, history_test_y, 0.01)
                 history = History(history_train_x, history_train_y, 0.01)
@@ -774,7 +830,8 @@ for repetition in repetitions:
                     for j in range(len(models)):
                         tf.reset_default_graph()
                         h2_using_history = MLP(X, Y, h2_train_size, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D',
-                                               history=history, use_history=True, model=models[j], test_model=False)
+                                               history=history, use_history=True, model_type=models[j], test_model=False,
+                                               copy_h1_weights=False, weights_seed=2)
                         result_using_history = h2_using_history.test(history_test_x, history_test_y, h1)
                         h2_on_history_x[j] += [result_using_history['compatibility']]
                         h2_on_history_y[j] += [result_using_history['auc']]
@@ -798,14 +855,59 @@ for repetition in repetitions:
                         
                 h1_x = [min_x, max_x]
                 h1_y = [h1_acc, h1_acc]
-                plt.plot(h1_x, h1_y, 'k--', label='h1')
-                plt.plot(h2_on_history_not_using_history_x, h2_on_history_not_using_history_y, 'b', marker='o', linewidth=2, label='h2 without history')
-                plt.plot(h2_on_history_L0_x, h2_on_history_L0_y, 'r', marker='.', label='h2 with L0')
-                plt.plot(h2_on_history_L1_x, h2_on_history_L1_y, 'm', marker='.', label='h2 with L1')
-                plt.plot(h2_on_history_L2_x, h2_on_history_L2_y, 'orange', marker='.', label='h2 with L2')
+                plt.plot(h1_x, h1_y, 'k--', marker='.', label='h1')
+                plt.plot(h2_baseline_x, h2_baseline_y, 'ks', markersize=10, label='h2 baseline')
+                plt.plot(h2_on_history_not_using_history_x, h2_on_history_not_using_history_y, 'b', marker='.', linewidth=5, markersize=18, label='h2 not using history')
+                plt.plot(h2_on_history_L0_x, h2_on_history_L0_y, 'r', marker='.', linewidth=4, markersize=14, label='h2 using L0')
+                plt.plot(h2_on_history_L1_x, h2_on_history_L1_y, 'm', marker='.', linewidth=3, markersize=10, label='h2 using L1')
+                plt.plot(h2_on_history_L2_x, h2_on_history_L2_y, 'orange', marker='.', linewidth=2, markersize=6, label='h2 using L2')
                 plt.xlabel('compatibility')
                 plt.ylabel('accuracy')
-                plt.legend(('h1', 'h2 not using history', 'h2 using L0', 'h2 using L1', 'h2 using L2'), loc='center left')
+                plt.legend(loc='center left')
+                plt.title(
+                    user_group_name + ' ' + str(user_id) + ', ' + str(history_len) + ' instances, train frac = ' + str(
+                        100 * history_train_fraction) + '%, seed=' + str(seed + 1))
+
+                com_range = int(100 * (max_x - min_x))
+                auc_range = int(100 * (max_y - min_y))
+
+                plt.savefig(
+                    plots_dir + '\\by_hist_length\\len_' + str(history_len) + '_' + user_group_name + '_' + str(
+                        user_id) + '.png')
+                plt.savefig(
+                    plots_dir + '\\by_accuracy_range\\acc_' + str(auc_range) + '_' + user_group_name + '_' + str(
+                        user_id) + '.png')
+                plt.savefig(
+                    plots_dir + '\\by_compatibility_range\\com_' + str(com_range) + '_' + user_group_name + '_' + str(
+                        user_id) + '.png')
+                plt.savefig(
+                    by_user_dir + '\\'+user_group_name+'_'+str(user_id) + ' '+str(seed+1)+'.png')
+                # plt.show()
+
+                with open(results_path, 'a', newline='') as file_out:
+                    writer = csv.writer(file_out)
+                    for i in range(len(diss_weights)):
+                        row = [
+                            str(history_train_fraction),
+                            str(user_id),
+                            str(history_len),
+                            str(seed + 1),
+                            str(com_range),
+                            str(auc_range),
+                            str(h1_acc),
+                            str(h2_baseline_x[0]),
+                            str(h2_baseline_y[0]),
+                            str(diss_weights[i]*diss_multiply_factor),
+                            str(h2_on_history_not_using_history_x[i]),
+                            str(h2_on_history_not_using_history_y[i]),
+                            str(h2_on_history_L0_x[i]),
+                            str(h2_on_history_L0_y[i]),
+                            str(h2_on_history_L1_x[i]),
+                            str(h2_on_history_L1_y[i]),
+                            str(h2_on_history_L2_x[i]),
+                            str(h2_on_history_L2_y[i])
+                        ]
+                        writer.writerow(row)
 
             else:  # on test
                 h1_x = [min_x, max_x]
@@ -814,7 +916,12 @@ for repetition in repetitions:
                 plt.plot(h2_on_history_not_using_history_x, h2_on_history_not_using_history_y, 'b', marker='.', label='h2')
                 plt.xlabel('compatibility')
                 plt.ylabel('accuracy')
-                plt.legend(('h1', 'h2'), loc='center left')
+                plt.legend(loc='center left')
+                plt.title('test, seed=' + str(user_id) + ', train sets: h1=' + str(h1_train_size) + ' h2=' + str(
+                    h2_train_size))
+
+                plt.savefig(plots_dir + '.png')
+                # plt.show()
             # # hist and no hist plot
             # h1_x = [min(min(h2_on_history_not_using_history_x), min(h2_on_history_L0_x)),
             #         max(max(h2_on_history_not_using_history_x), max(h2_on_history_L0_x))]
@@ -847,19 +954,5 @@ for repetition in repetitions:
 
             # save plot
             # plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots'
-            plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\' + user_group_name
-            plot_count = len(os.listdir(plots_dir))
-
-            com_range = int(100 * (max_x - min_x))
-            auc_range = int(100 * (max_y - min_y))
-
-            if user_group_name == 'test':
-                plt.title(user_group_name + ' ' + str(repetition + 1) + ', train sets: h1=' + str(h1_train_size) + ' h2=' + str(h2_train_size))
-                plt.savefig(plots_dir + '\\test_'+str(repetition + 1)+'.png')
-                plt.show()
-            else:
-                plt.title(user_group_name + ' ' + str(user_id) + ', ' + str(len(history_test_y)) + ' instances')
-                plt.savefig(plots_dir + '\\by_hist_length\\len_' + str(len(user_test_set)) + '_' + user_group_name + '_' + str(user_id) + '.png')
-                plt.savefig(plots_dir + '\\by_accuracy_range\\acc_' + str(auc_range) +'_' + user_group_name + '_' + str(user_id) + '.png')
-                plt.savefig(plots_dir + '\\by_compatibility_range\\com_' + str(com_range) +'_' + user_group_name + '_' + str(user_id) + '.png')
+            # plot_count = len(os.listdir(plots_dir))
             plt.clf()
