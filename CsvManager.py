@@ -1,6 +1,6 @@
 import csv
 import numpy as np
-
+import os
 
 def binarize(path, bin_count, diss_types):
     with open(path + ".csv", 'r', newline='') as file_in:
@@ -218,9 +218,27 @@ def csv_splitter(path, columns, max_rows_per_part=500000):
                         break
 
 
+def from_file_names_to_csv(folder_path, file_path):
+    with open(file_path, 'w', newline='') as file_out:
+        writer = csv.writer(file_out)
+        writer.writerow(['user_id', 'cos_sim'])
+        for root, dirs, files in os.walk(folder_path, topdown=False):
+            for name in files:
+                strings = name.split('_')
+                user_id = strings[4].split('.')[0]
+                cos_sim = strings[1]
+                writer.writerow([user_id, cos_sim])
+
+
+
+
 # path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning_2012\\ASSISTments_2012"
-path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\not used\\non_skill_builder_data_new'
+# path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\not used\\non_skill_builder_data_new'
 # binarize(path, 30, 3)
 # column_splitter(path, 'opportunity')
-csv_splitter(path, [0, 3, 8, 9, 10, 14, 15, 16, 18, 20, 22, 23, 24, 25], 1000)
+# csv_splitter(path, [0, 3, 8, 9, 10, 14, 15, 16, 18, 20, 22, 23, 24, 25], 1000)
 
+folder_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\analysis\\users\\distributions\\all skills\\train_percent_50\\skill'
+file_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\analysis\\users\\distributions\\all skills\\train_percent_50\\cos_sim_of_sets.csv'
+
+from_file_names_to_csv(folder_path, file_path)

@@ -1,5 +1,6 @@
 import csv
 import os.path
+import shutil
 import time
 import matplotlib.pyplot as plt
 import numpy as np
@@ -416,29 +417,6 @@ class MLP:
         return 1 / (1 + np.exp(-logits))
 
     def test(self, x, y, old_model=None, history=None):
-        # init_op = tf.global_variables_initializer()
-        # with tf.Session() as sess:
-        #     sess.run(init_op)
-        #     new_output = self.predict_probabilities(x)
-        #     correct_prediction = tf.equal(tf.round(new_output), y)
-        #     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32), name="Accuracy").eval()
-        #
-        #     if old_model is None:
-        #         # return sklearn.metrics.roc_auc_score(y, new_output)
-        #         return accuracy
-        #
-        #     old_output = old_model.predict_probabilities(x)
-        #     y_old_correct = tf.cast(tf.equal(tf.round(old_output), y), tf.float32).eval()
-        #     y_new_correct = tf.cast(tf.equal(tf.round(new_output), y), tf.float32).eval()
-        #     if history is not None:
-        #         likelihood = history.likelihood
-        #         compatibility = tf.reduce_sum(y_old_correct * y_new_correct * likelihood) / tf.reduce_sum(
-        #             y_old_correct * likelihood)
-        #     else:
-        #         compatibility = tf.reduce_sum(y_old_correct * y_new_correct) / tf.reduce_sum(y_old_correct)
-        #     # return {'compatibility': compatibility.eval(), 'auc': sklearn.metrics.roc_auc_score(y, new_output)}
-        #     return {'compatibility': compatibility.eval(), 'auc': accuracy}
-
         new_output = self.predict_probabilities(x)
         y_new_correct = np.equal(np.round(new_output), y).astype(int)
         accuracy = np.mean(y_new_correct)
@@ -449,12 +427,41 @@ class MLP:
 
         old_output = old_model.predict_probabilities(x)
         y_old_correct = np.equal(np.round(old_output), y).astype(int)
-        if history is not None:
-            likelihood = history.likelihood
-            compatibility = np.sum(y_old_correct * y_new_correct * likelihood) / np.sum(y_old_correct * likelihood)
-        else:
-            compatibility = np.sum(y_old_correct * y_new_correct) / np.sum(y_old_correct)
+
+        # if history is not None:
+        #     likelihood = history.likelihood
+        #     compatibility = np.sum(y_old_correct * y_new_correct * likelihood) / np.sum(y_old_correct * likelihood)
+        #
+        # else:
+        compatibility = np.sum(y_old_correct * y_new_correct) / np.sum(y_old_correct)
         # return {'compatibility': compatibility.eval(), 'auc': sklearn.metrics.roc_auc_score(y, new_output)}
+        return {'compatibility': compatibility, 'auc': accuracy}
+
+    def hybrid_test(self, x, y, old_model, history, std_offset=0):
+        # get dissonant indexes
+        hist_old_output = old_model.predict_probabilities(history.instances)
+        hist_old_correct = np.equal(np.round(hist_old_output), history.labels)
+        hist_new_output = self.predict_probabilities(history.instances)
+        hist_new_incorrect = np.not_equal(np.round(hist_new_output), history.labels)
+        dissonant_indexes = (hist_old_correct*hist_new_incorrect).reshape(-1)
+
+        # get dissonant likelihood
+        dissonant_instances = history.instances[dissonant_indexes]
+        dissonant_labels = history.labels[dissonant_indexes]
+        dissonant_history = History(dissonant_instances, dissonant_labels, history.width_factor, history.epsilon)
+        dissonant_history.set_simple_likelihood(x, history.parametric_magnitude_multiplier)
+        dissonant_likelihood = dissonant_history.likelihood
+
+        # get accuracy and compatibility
+        threshold = dissonant_likelihood.mean() + dissonant_likelihood.std() * std_offset
+        old_output = old_model.predict_probabilities(x)
+        new_output = self.predict_probabilities(x)
+        hybrid_output = np.where(dissonant_likelihood < threshold, new_output, old_output)
+        hybrid_correct = np.equal(np.round(hybrid_output), y).astype(int)
+        old_correct = np.equal(np.round(old_output), y).astype(int)
+        accuracy = np.mean(hybrid_correct)
+        compatibility = np.sum(old_correct * hybrid_correct) / np.sum(old_correct)
+
         return {'compatibility': compatibility, 'auc': accuracy}
 
 
@@ -472,9 +479,12 @@ class History:
         self.width_factor = width_factor
         self.likelihood = None
         self.kernels = None
+        self.parametric_magnitude_multiplier = 1
+        self.kernel_magnitude_multiplier = 1
 
     def set_simple_likelihood(self, df, magnitude_multiplier=1):
         # compute likelihood for each attribute
+        self.parametric_magnitude_multiplier = magnitude_multiplier
         diff = np.subtract(df, self.means)
         sqr_diff = np.power(diff, 2)
         div = np.add(sqr_diff, self.vars)
@@ -500,6 +510,7 @@ class History:
         self.likelihood = np.reshape(self.likelihood, (len(df), 1))
 
     def set_kernels(self, df, sigma=1, magnitude_multiplier=1):
+        self.kernel_magnitude_multiplier = magnitude_multiplier
         distances = []
         for instance in df:
             entry = []
@@ -531,27 +542,32 @@ class History:
 # results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\results\\fraudDetection.csv"
 # target_col = 'isFraud'
 
-full_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_full_encoded_with_skill.csv'
-# balanced_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_balanced_encoded.csv'
+full_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\e-learning_full_encoded.csv'
 results_path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\results\\e-learning"
 target_col = 'correct'
 categ_cols = ['tutor_mode', 'answer_type', 'type']
 # categ_cols = ['skill', 'tutor_mode', 'answer_type', 'type']
 user_group_names = ['user_id']
 history_train_fraction = 0.5
-h1_train_size = 500
-h2_train_size = 5000
-h1_epochs = 300
+h1_train_size = 200
+h2_train_size = 3000
+
+h1_epochs = 800
 # h1_epochs = 10
-h2_epochs = 100
+h2_epochs = 200
 # h2_epochs = 2
-diss_weights = range(6)
-diss_multiply_factor = 0.5
-seeds = range(5)
-min_history_size = 200
+diss_weights = range(4)
+# diss_weights = range(2)
+# seeds = range(3, 6)
+seeds = range(1)
+
+diss_multiply_factor = 0.4
+hybrid_stds = [3, 2, 1, 0, -1, -2, -3]
+min_history_size = 100
 max_history_size = 500
 current_user_count = 0
-split_by_chronological_order = True
+# split_by_chronological_order = True
+split_by_chronological_order = False
 
 # full_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\KddCup\\2006\\kddCup_full_encoded.csv'
 # balanced_dataset_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\KddCup\\2006\\kddCup_balanced_encoded.csv'
@@ -568,31 +584,40 @@ split_by_chronological_order = True
 
 # pre-process data
 
-results_path += '\\'+str(len(os.listdir(results_path)))+'.csv'
-with open(results_path, 'w', newline='') as file_out:
+plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots'
+if os.path.exists(plots_dir):
+    shutil.rmtree(plots_dir)
+os.makedirs(plots_dir + '\\by_hist_length')
+os.makedirs(plots_dir + '\\by_accuracy_range')
+os.makedirs(plots_dir + '\\by_compatibility_range')
+os.makedirs(plots_dir + '\\by_user_id')
+
+with open(plots_dir + '\\log.csv', 'w', newline='') as file_out:
     writer = csv.writer(file_out)
     header = ['train frac', 'user_id', 'instances', 'train seed', 'comp range', 'acc range', 'h1 acc',
               'baseline x', 'baseline y', 'diss weight', 'no hist x', 'no hist y',
               'L0 x', 'L0 y', 'L1 x', 'L1 y', 'L2 x', 'L2 y']
     writer.writerow(header)
 
-
+print('loading data...')
 df_full = pd.read_csv(full_dataset_path)
+# df_full = pd.read_csv(full_dataset_path)[:20000]
 
-try:
-    del df_full['school_id']
-    del df_full['teacher_id']
-    del df_full['student_class_id']
-    del df_full['skill']
-except:
-    pass
+# try:
+#     # del df_full['school_id']
+#     # del df_full['teacher_id']
+#     # del df_full['student_class_id']
+#     del df_full['skill']
+# except:
+#     pass
 
 # one hot encoding
+print('pre-processing data... ')
 ohe = ce.OneHotEncoder(cols=categ_cols, use_cat_names=True)
 df_full = ohe.fit_transform(df_full)
 # df_balanced = ohe.transform(df_balanced)
 
-print('pre-processing data and splitting into train and test sets...')
+print('splitting into train and test sets...')
 
 # create user groups
 user_groups_train = []
@@ -613,6 +638,7 @@ user_groups_test[0] = df_full.drop(df_train.index).groupby([user_group_names[0]]
 user_groups_train += [df_train.groupby([user_group_names[0]])]
 
 # balance train set
+print('balancing train set...')
 del df_train[user_group_names[0]]
 target_group = df_train.groupby(target_col)
 df_train = target_group.apply(lambda x: x.sample(target_group.size().min(), random_state=1))
@@ -624,12 +650,15 @@ Ys_by_seed = []
 h1s_by_seed = []
 h2s_not_using_history_by_seed = []
 
-test_group = {}
+tests_group = {}
+tests_group_user_ids = []
 for seed in seeds:
+    print('SETTING TRAIN SEED '+str(seed+1)+'...')
     df_train_subset = df_train.sample(n=h2_train_size, random_state=seed)
     df_train_subsets_by_seed += [df_train_subset]
 
-    test_group[str(seed+1)] = df_train_subset
+    tests_group[str(seed + 1)] = df_train_subset
+    tests_group_user_ids += [str(seed + 1)]
 
     X = df_train_subset.loc[:, df_train_subset.columns != target_col]
     Y = df_train_subset[[target_col]]
@@ -670,23 +699,33 @@ for seed in seeds:
 
     # h1_train_fractions = [200]
     # for h1_train_fraction in h1_train_fractions:
-    h1 = MLP(X, Y, h1_train_size, h1_epochs, 50, 10, 5, 0.02)
+    h1 = MLP(X, Y, h1_train_size, h1_epochs, 50, 10, 5, 0.02, weights_seed=1)
     h1s_by_seed += [h1]
 
     print("training h2s not using history...")
 
     h2s_not_using_history = []
     for i in diss_weights:
-        print(str(len(h2s_not_using_history) + 1) + "/" + str(len(diss_weights)))
+        print('dissonance weight '+str(len(h2s_not_using_history) + 1) + "/" + str(len(diss_weights)))
         diss_weight = diss_multiply_factor * i
         h2s_not_using_history += [MLP(X, Y, h2_train_size, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D', True,
-                                      test_model=False, copy_h1_weights=False, weights_seed=2)]
+                                      test_model=False, copy_h1_weights=True, weights_seed=2)]
         tf.reset_default_graph()
     h2s_not_using_history_by_seed += [h2s_not_using_history]
 
 user_group_names.insert(0, 'test')
-user_groups_test.insert(0, test_group.items())
+user_groups_test.insert(0, tests_group)
 
+# get users with highest cos_sim between history train and test sets
+students_group_user_ids = []
+users_cos_sim = []
+cos_sim_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\analysis\\users\\distributions\\all skills\\train_percent_50\\cos_sim_of_sets.csv'
+with open(cos_sim_path, 'r', newline='') as file_in:
+    reader = csv.reader(file_in)
+    next(reader)
+    for row in reader:
+        students_group_user_ids += [int(row[0])]
+        users_cos_sim += [row[1]]
 # com_range += [abs(h2s[0].compatibility-h2s[1].compatibility)]
 # acc_range += [abs(h2s[0].accuracy-h2s[1].accuracy)]
 # h1_train_fractions = [x / h2_train_fraction for x in h1_train_fractions]
@@ -700,40 +739,46 @@ user_groups_test.insert(0, test_group.items())
 # plt.show()
 # break
 
-by_user_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\by_seed'
-if not os.path.exists(by_user_dir):
-    os.makedirs(by_user_dir)
-
+user_groups_user_ids = [tests_group_user_ids, students_group_user_ids]
 user_group_idx = -1
 for user_group_test in user_groups_test:
     user_group_idx += 1
     user_group_name = user_group_names[user_group_idx]
+    user_ids = user_groups_user_ids[user_group_idx]
 
     # if user_group_name == 'user_id' or user_group_name == 'teacher_id' or user_group_name == 'student_class_id':
     # if user_group_name == 'teacher_id' or user_group_name == 'student_class_id':
     #     continue
-    for seed in seeds:
-        plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\seed_' + str(seed + 1)
-        if not os.path.exists(plots_dir):
-            os.makedirs(plots_dir)
-        if user_group_name != 'test':
-            plots_dir += '\\' + user_group_name
-            if not os.path.exists(plots_dir):
-                os.makedirs(plots_dir + '\\by_hist_length')
-                os.makedirs(plots_dir + '\\by_accuracy_range')
-                os.makedirs(plots_dir + '\\by_compatibility_range')
+
+
+    # for seed in seeds:
+    #     plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\seed_' + str(seed + 1)
+    #     if not os.path.exists(plots_dir):
+    #         os.makedirs(plots_dir)
+    #     if user_group_name != 'test':
+    #         plots_dir += '\\' + user_group_name
+    #         if not os.path.exists(plots_dir):
+    #             os.makedirs(plots_dir + '\\by_hist_length')
+    #             os.makedirs(plots_dir + '\\by_accuracy_range')
+    #             os.makedirs(plots_dir + '\\by_compatibility_range')
 
     total_users = 0
-    for user_id, user_test_set in user_group_test:
+    user_id_set_pairs = user_group_test
+    if user_group_name == 'test':
+        user_id_set_pairs = user_id_set_pairs.items()
+    for user_id, user_test_set in user_id_set_pairs:
         if len(user_test_set) >= min_history_size:
             total_users += 1
 
     user_count = 0
-    for user_id, user_test_set in user_group_test:
-        if user_group_name != 'test':
-            if len(user_test_set) < min_history_size:
-                continue
-            if len(user_test_set) > max_history_size:
+    # for user_id, user_test_set in user_group_test:
+    for user_idx in range(len(user_ids)):
+        user_id = user_ids[user_idx]
+        if user_group_name == 'test':
+            user_test_set = user_group_test[user_id]
+        else:
+            user_test_set = user_group_test.get_group(user_id)
+            if len(user_test_set) < min_history_size or len(user_test_set) > max_history_size:
                 continue
             # if user_count > user_max_count:
             #     continue
@@ -748,28 +793,54 @@ for user_group_test in user_groups_test:
             except:
                 pass
 
-        for seed in seeds:
-            if user_group_name == 'test' and seed != user_count-1:
+        history_test_x = scaler.transform(user_test_set.loc[:, user_test_set.columns != target_col])
+        history_test_y = labelizer.transform(user_test_set[[target_col]])
+
+        if user_group_name != 'test':
+
+            user_train_set = user_groups_train[user_group_idx - 1].get_group(user_id)
+            for name in user_group_names:
+                try:
+                    del user_train_set[name]
+                except:
+                    pass
+            history_len = len(user_test_set) + len(user_train_set)
+
+            history_train_x = scaler.transform(user_train_set.loc[:, user_train_set.columns != target_col])
+            history_train_y = labelizer.transform(user_train_set[[target_col]])
+
+            # history = History(history_test_x, history_test_y, 0.01)
+            history = History(history_train_x, history_train_y, 0.001)
+            history.set_simple_likelihood(X, 2)
+            # history.set_cheat_likelihood(X_original, threshold)
+            history.set_kernels(X, magnitude_multiplier=10)
+
+            print('training baseline model...')
+            h2_baseline = MLP(history_train_x, history_train_y, len(user_train_set), h2_epochs, 50, 10, 5,
+                              weights_seed=2)
+
+        for seed_idx in range(len(seeds)):
+            seed = seeds[seed_idx]
+            if user_group_name == 'test' and seed_idx != user_count-1:
                 continue
-            print('SEED ' + str(seed + 1) + '\n')
-            plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\seed_' + str(
-                seed + 1) + '\\' + user_group_name
+            # print('SEED ' + str(seed + 1) + '\n')
+            # plots_dir = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\plots\\seed_' + str(
+            #     seed + 1) + '\\' + user_group_name
             print(
                 str(user_count) + '/' + str(total_users) + ' ' + user_group_name + ' ' + str(user_id) + ', instances: ' + str(
                     len(user_test_set)) + ', seed='+str(seed+1)+'\n')
 
-            X = Xs_by_seed[seed]
-            Y = Ys_by_seed[seed]
-            h1 = h1s_by_seed[seed]
-            h2s_not_using_history = h2s_not_using_history_by_seed[seed]
-
-            history_test_x = scaler.transform(user_test_set.loc[:, user_test_set.columns != target_col])
-            history_test_y = labelizer.transform(user_test_set[[target_col]])
+            X = Xs_by_seed[seed_idx]
+            Y = Ys_by_seed[seed_idx]
+            h1 = h1s_by_seed[seed_idx]
+            h2s_not_using_history = h2s_not_using_history_by_seed[seed_idx]
 
             h1_acc = h1.test(history_test_x, history_test_y)
 
             h2_on_history_not_using_history_x = []
             h2_on_history_not_using_history_y = []
+
+
             for h2 in h2s_not_using_history:
                 result_not_using_history = h2.test(history_test_x, history_test_y, h1)
                 h2_on_history_not_using_history_x += [result_not_using_history['compatibility']]
@@ -782,35 +853,24 @@ for user_group_test in user_groups_test:
 
             if user_group_name != 'test':
 
-                user_train_set = user_groups_train[user_group_idx - 1].get_group(user_id)
-                for name in user_group_names:
-                    try:
-                        del user_train_set[name]
-                    except:
-                        pass
-
-                history_len = len(user_test_set) + len(user_train_set)
-
-                history_train_x = scaler.transform(user_train_set.loc[:, user_train_set.columns != target_col])
-                history_train_y = labelizer.transform(user_train_set[[target_col]])
-
-                print('training baseline model...')
-                h2_baseline = MLP(history_train_x, history_train_y, len(user_train_set), h1_epochs, 50, 10, 5,
-                                  weights_seed=2)
                 result_not_using_history = h2_baseline.test(history_test_x, history_test_y, h1)
                 h2_baseline_x = [result_not_using_history['compatibility']]
                 h2_baseline_y = [result_not_using_history['auc']]
 
-                min_x = min(min_x, h2_baseline_x[0])
-                max_x = max(max_x, h2_baseline_x[0])
-                min_y = min(min_y, h2_baseline_y[0])
-                max_y = max(max_y, h2_baseline_y[0])
+                h2_on_history_hybrid_x = []
+                h2_on_history_hybrid_y = []
 
-                # history = History(history_test_x, history_test_y, 0.01)
-                history = History(history_train_x, history_train_y, 0.01)
-                history.set_simple_likelihood(X, 2)
-                # history.set_cheat_likelihood(X_original, threshold)
-                history.set_kernels(X, magnitude_multiplier=10)
+                print('hybrid testing...\n')
+                for std in hybrid_stds:
+                    h2 = h2s_not_using_history[0]  # no dissonance
+                    result_hybrid = h2.hybrid_test(history_test_x, history_test_y, h1, history, std)
+                    h2_on_history_hybrid_x += [result_hybrid['compatibility']]
+                    h2_on_history_hybrid_y += [result_hybrid['auc']]
+
+                min_x = min(min_x, h2_baseline_x[0], min(h2_on_history_hybrid_x))
+                max_x = max(max_x, h2_baseline_x[0], max(h2_on_history_hybrid_x))
+                min_y = min(min_y, h2_baseline_y[0], min(h2_on_history_hybrid_y))
+                max_y = max(max_y, h2_baseline_y[0], max(h2_on_history_hybrid_y))
 
                 models = ['L0', 'L1', 'L2']
                 h2_on_history_L0_x = []
@@ -825,13 +885,13 @@ for user_group_test in user_groups_test:
                 iteration = 0
                 for i in diss_weights:
                     iteration += 1
-                    print(str(iteration) + "/" + str(len(diss_weights)))
+                    print('dissonance weight '+str(iteration) + "/" + str(len(diss_weights)))
                     diss_weight = diss_multiply_factor * i
                     for j in range(len(models)):
                         tf.reset_default_graph()
                         h2_using_history = MLP(X, Y, h2_train_size, h2_epochs, 50, 10, 5, 0.02, diss_weight, h1, 'D',
                                                history=history, use_history=True, model_type=models[j], test_model=False,
-                                               copy_h1_weights=False, weights_seed=2)
+                                               copy_h1_weights=True, weights_seed=2)
                         result_using_history = h2_using_history.test(history_test_x, history_test_y, h1)
                         h2_on_history_x[j] += [result_using_history['compatibility']]
                         h2_on_history_y[j] += [result_using_history['auc']]
@@ -858,18 +918,23 @@ for user_group_test in user_groups_test:
                 plt.plot(h1_x, h1_y, 'k--', marker='.', label='h1')
                 plt.plot(h2_baseline_x, h2_baseline_y, 'ks', markersize=10, label='h2 baseline')
                 plt.plot(h2_on_history_not_using_history_x, h2_on_history_not_using_history_y, 'b', marker='.', linewidth=5, markersize=18, label='h2 not using history')
+                plt.plot(h2_on_history_hybrid_x, h2_on_history_hybrid_y, 'g', marker='.', linewidth=4, markersize=16, label='h2 hybrid')
                 plt.plot(h2_on_history_L0_x, h2_on_history_L0_y, 'r', marker='.', linewidth=4, markersize=14, label='h2 using L0')
                 plt.plot(h2_on_history_L1_x, h2_on_history_L1_y, 'm', marker='.', linewidth=3, markersize=10, label='h2 using L1')
                 plt.plot(h2_on_history_L2_x, h2_on_history_L2_y, 'orange', marker='.', linewidth=2, markersize=6, label='h2 using L2')
                 plt.xlabel('compatibility')
                 plt.ylabel('accuracy')
-                plt.legend(loc='center left')
+                # plt.legend(loc='lower left')
+                plt.legend()
                 plt.title(
-                    user_group_name + ' ' + str(user_id) + ', ' + str(history_len) + ' instances, train frac = ' + str(
-                        100 * history_train_fraction) + '%, seed=' + str(seed + 1))
+                    'user=' + str(user_id) + ' hist_len=' + str(history_len) + ' split=' + str(
+                        100 * history_train_fraction) + '% sim=' + str(users_cos_sim[user_idx])+' seed=' + str(seed + 1))
 
-                com_range = int(100 * (max_x - min_x))
-                auc_range = int(100 * (max_y - min_y))
+                # com_range = int(100 * (max_x - min_x))
+                # auc_range = int(100 * (max_y - min_y))
+
+                com_range = max_x - min_x
+                auc_range = max_y - min_y
 
                 plt.savefig(
                     plots_dir + '\\by_hist_length\\len_' + str(history_len) + '_' + user_group_name + '_' + str(
@@ -881,10 +946,10 @@ for user_group_test in user_groups_test:
                     plots_dir + '\\by_compatibility_range\\com_' + str(com_range) + '_' + user_group_name + '_' + str(
                         user_id) + '.png')
                 plt.savefig(
-                    by_user_dir + '\\'+user_group_name+'_'+str(user_id) + ' '+str(seed+1)+'.png')
-                # plt.show()
+                    plots_dir + '\\by_user_id\\'+user_group_name+'_'+str(user_id) + '_seed_'+str(seed+1)+'.png')
+                plt.show()
 
-                with open(results_path, 'a', newline='') as file_out:
+                with open(plots_dir + '\\log.csv', 'a', newline='') as file_out:
                     writer = csv.writer(file_out)
                     for i in range(len(diss_weights)):
                         row = [
@@ -916,11 +981,11 @@ for user_group_test in user_groups_test:
                 plt.plot(h2_on_history_not_using_history_x, h2_on_history_not_using_history_y, 'b', marker='.', label='h2')
                 plt.xlabel('compatibility')
                 plt.ylabel('accuracy')
-                plt.legend(loc='center left')
+                plt.legend(loc='lower left')
                 plt.title('test, seed=' + str(user_id) + ', train sets: h1=' + str(h1_train_size) + ' h2=' + str(
                     h2_train_size))
 
-                plt.savefig(plots_dir + '.png')
+                plt.savefig(plots_dir+'\\test_for_seed_' + str(user_id) + '.png')
                 # plt.show()
             # # hist and no hist plot
             # h1_x = [min(min(h2_on_history_not_using_history_x), min(h2_on_history_L0_x)),
