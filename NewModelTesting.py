@@ -486,7 +486,7 @@ class MLP:
         self.hybrid_old_output = self.old_model.predict_probabilities(x).reshape(-1)
         self.hybrid_new_output = self.predict_probabilities(x).reshape(-1)
 
-    def hybrid_test(self, y, std_offset):
+    def hybrid_test(self, history, x, y, std_offset):
         # get dissonant indexes
         hist_old_output = self.old_model.predict_probabilities(history.instances)
         hist_old_correct = np.equal(np.round(hist_old_output), history.labels)
@@ -500,10 +500,13 @@ class MLP:
         dissonant_history = History(dissonant_instances, dissonant_labels, history.width_factor, history.epsilon)
 
         dissonant_history.set_simple_likelihood(x, history.parametric_magnitude_multiplier)
-        dissonant_likelihood = dissonant_history.likelihood
+        likelihood = dissonant_history.likelihood
+
+        self.hybrid_old_output = self.old_model.predict_probabilities(x)
+        self.hybrid_new_output = self.predict_probabilities(x)
 
         # get accuracy and compatibility
-        likelihood = self.dissonant_likelihood
+        # likelihood = self.dissonant_likelihood
         threshold = likelihood.mean() + likelihood.std() * std_offset
         hybrid_output = np.where(likelihood < threshold, self.hybrid_new_output, self.hybrid_old_output)
         hybrid_correct = np.equal(np.round(hybrid_output), y).astype(int)
@@ -936,11 +939,11 @@ for user_group_test in user_groups_test:
                     min_y = min(min_y, h2_baseline_y[0])
                     max_y = max(max_y, h2_baseline_y[0])
 
-                print('hybrid training...')
-                start_time = int(round(time.time() * 1000))
-                h2s_not_using_history[0].set_hybrid_test(history, history_test_x)
-                runtime = str(int((round(time.time() * 1000)) - start_time) / 1000)
-                print("runtime = " + str(runtime) + " secs\n")
+                # print('hybrid training...')
+                # start_time = int(round(time.time() * 1000))
+                # h2s_not_using_history[0].set_hybrid_test(history, history_test_x)
+                # runtime = str(int((round(time.time() * 1000)) - start_time) / 1000)
+                # print("runtime = " + str(runtime) + " secs\n")
 
                 h2_on_history_hybrid_x = []
                 h2_on_history_hybrid_y = []
@@ -948,7 +951,8 @@ for user_group_test in user_groups_test:
                 print('hybrid testing...\n')
                 for std in hybrid_stds:
                     h2 = h2s_not_using_history[0]  # no dissonance
-                    result_hybrid = h2.hybrid_test(history_test_y, std)
+                    # result_hybrid = h2.hybrid_test(history_test_y, std)
+                    result_hybrid = h2.hybrid_test(history, history_test_x, history_test_y, std)
                     h2_on_history_hybrid_x += [result_hybrid['compatibility']]
                     h2_on_history_hybrid_y += [result_hybrid['auc']]
 
