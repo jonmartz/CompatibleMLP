@@ -182,7 +182,7 @@ def manage_csv_line_delimited():
                 writer.writerow(values)
 
 
-def csv_splitter(path, columns, max_rows_per_part=500000):
+def csv_splitter(path, column_idxs, max_rows_per_part=500000):
     with open(path + ".csv", 'r', newline='', encoding='utf-8') as file_in:
         reader = csv.reader(file_in)
         first = True
@@ -198,7 +198,8 @@ def csv_splitter(path, columns, max_rows_per_part=500000):
                 rows_in_part = 0
                 while not part_end_reached:
                     try:
-                        row = next(reader)[columns]
+                        raw_row = next(reader)
+                        row = [raw_row[i] for i in column_idxs]
                         rows_in_part += 1
                         if first:
                             first = False
@@ -206,11 +207,9 @@ def csv_splitter(path, columns, max_rows_per_part=500000):
                         elif first_in_part:
                             first_in_part = False
                             writer.writerow(header)
-                            if not row[22] == '':
-                                writer.writerow(row)
+                            writer.writerow(row)
                         else:
-                            if not row[22] == '':
-                                writer.writerow(row)
+                            writer.writerow(row)
                         if rows_in_part == max_rows_per_part:
                             part_end_reached = True
                     except StopIteration:
@@ -232,13 +231,13 @@ def from_file_names_to_csv(folder_path, file_path):
 
 
 
-# path = "C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning_2012\\ASSISTments_2012"
+path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\ASSISTments_2012\\by_parts\\ASSISTments_2012_part_1'
 # path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\not used\\non_skill_builder_data_new'
 # binarize(path, 30, 3)
 # column_splitter(path, 'opportunity')
-# csv_splitter(path, [0, 3, 8, 9, 10, 14, 15, 16, 18, 20, 22, 23, 24, 25], 1000)
+# csv_splitter(path, [0, 3, 8, 9, 10, 14, 15, 16, 20, 22, 29], 1000000)
 
-folder_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\analysis\\users\\distributions\\all skills\\train_percent_50\\skill'
-file_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\analysis\\users\\distributions\\all skills\\train_percent_50\\cos_sim_of_sets.csv'
-
-from_file_names_to_csv(folder_path, file_path)
+# folder_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\analysis\\users\\distributions\\all skills\\train_percent_50\\skill'
+# file_path = 'C:\\Users\\Jonathan\\Documents\\BGU\\Research\\Thesis\\DataSets\\e-learning\\analysis\\users\\distributions\\all skills\\train_percent_50\\cos_sim_of_sets.csv'
+#
+# from_file_names_to_csv(folder_path, file_path)
